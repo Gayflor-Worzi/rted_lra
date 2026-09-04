@@ -1,0 +1,16 @@
+.git
+.env
+.github
+mobile
+node_modules
+frontend/node_modules
+frontend/dist
+vendor
+storage/logs/*
+storage/framework/cache/data/*
+storage/framework/cache/data
+storage/framework/sessions/*
+storage/framework/views/*
+Dockerfile
+.dockerignore
+.deploy
