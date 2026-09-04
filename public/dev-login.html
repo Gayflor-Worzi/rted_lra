@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RETD_LRA · Dev Test Console</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: #0f172a;
+    color: #e2e8f0;
+    min-height: 100vh;
+    padding: 40px 20px;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; }
+  h1 { font-size: 1.4rem; margin-bottom: 4px; }
+  .sub { color: #94a3b8; font-size: .85rem; margin-bottom: 28px; }
+  .card {
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 12px;
+    padding: 24px;
+    margin-bottom: 20px;
+  }
+  label { display: block; font-size: .8rem; color: #94a3b8; margin-bottom: 6px; }
+  input {
+    width: 100%;
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px solid #475569;
+    background: #0f172a;
+    color: #e2e8f0;
+    font-size: .95rem;
+    margin-bottom: 16px;
+  }
+  input:focus { outline: none; border-color: #38bdf8; }
+  button {
+    padding: 10px 18px;
+    border-radius: 8px;
+    border: none;
+    cursor: pointer;
+    font-size: .9rem;
+    font-weight: 600;
+    margin-right: 8px;
+    margin-bottom: 8px;
+    transition: opacity .15s;
+  }
+  button:hover { opacity: .85; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  .primary { background: #38bdf8; color: #0f172a; }
+  .secondary { background: #334155; color: #e2e8f0; }
+  .danger { background: #f87171; color: #0f172a; }
+  #status {
+    font-size: .85rem;
+    padding: 10px 14px;
+    border-radius: 8px;
+    margin-top: 12px;
+    display: none;
+  }
+  .ok    { background: #14532d; color: #bbf7d0; display: block !important; }
+  .err   { background: #7f1d1d; color: #fecaca; display: block !important; }
+  .info  { background: #1e3a5f; color: #bfdbfe; display: block !important; }
+  .userbox { line-height: 1.7; }
+  .userbox b { color: #38bdf8; }
+  .token {
+    font-family: monospace;
+    font-size: .75rem;
+    word-break: break-all;
+    background: #0f172a;
+    padding: 10px;
+    border-radius: 6px;
+    margin-top: 10px;
+    color: #a5f3fc;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: .85rem; margin-top: 10px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #334155; }
+  th { color: #94a3b8; font-weight: 600; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🔧 RETD_LRA — Backend Test Console</h1>
+  <p class="sub">Temporary developer page · talks directly to your local API at <code>http://localhost:8000/api/v1</code></p>
+
+  <!-- LOGIN -->
+  <div class="card" id="loginCard">
+    <label>Email</label>
+    <input type="email" id="email" value="wooze27@gmail.com">
+    <label>Password</label>
+    <input type="password" id="password" value="admin123">
+    <button class="primary" id="btnLogin" onclick="login()">Log In</button>
+    <div id="status"></div>
+  </div>
+
+  <!-- LOGGED IN -->
+  <div class="card hidden" id="userCard">
+    <div class="userbox" id="userInfo"></div>
+    <div class="token" id="tokenBox"></div>
+    <hr style="border-color:#334155;margin:16px 0;">
+    <button class="secondary" onclick="testMe()">Test /auth/me</button>
+    <button class="secondary" onclick="loadProperties()">Load Property Bills</button>
+    <button class="secondary" onclick="loadValuations()">Load Valuations</button>
+    <button class="secondary" onclick="loadAssessments()">Load Assessments</button>
+    <button class="secondary" onclick="loadTaxBills()">Load Tax Bills</button>
+    <button class="secondary" onclick="loadVisits()">Load Enforcement Visits</button>
+    <button class="secondary" onclick="loadPayments()">Load Payments</button>
+    <button class="secondary" onclick="loadAppeals()">Load Appeals</button>
+    <button class="secondary" onclick="loadNotifications()">My Notifications</button>
+    <button class="secondary" onclick="loadMeQueries()">M&E Queries</button>
+    <button class="secondary" onclick="loadMyTargets()">My Targets</button>
+    <button class="secondary" onclick="loadRegQueue()">Registration Queue</button>
+    <button class="secondary" onclick="loadAuditLogs()">Audit Trail</button>
+    <button class="danger" onclick="logout()">Log Out</button>
+  </div>
+
+  <!-- AUDIT LOGS -->
+  <div class="card hidden" id="alCard">
+    <h2 style="font-size:1rem;margin-bottom:10px;">🛡️ Audit Trail</h2>
+    <table id="alTable">
+      <thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Entity</th><th>Changes</th></tr></thead>
+      <tbody id="alRows"></tbody>
+    </table>
+    <p id="alEmpty" style="color:#94a3b8;font-size:.85rem;">No audit entries visible.</p>
+  </div>
+
+  <!-- REGISTRATION QUEUE -->
+  <div class="card hidden" id="rqCard">
+    <h2 style="font-size:1rem;margin-bottom:10px;">📥 Registration Queue (intake)</h2>
+    <table id="rqTable">
+      <thead><tr><th>Ref #</th><th>Bill #</th><th>Status</th><th>Assigned To</th><th>Reviewed At</th></tr></thead>
+      <tbody id="rqRows"></tbody>
+    </table>
+    <p id="rqEmpty" style="color:#94a3b8;font-size:.85rem;">Queue is empty.</p>
+  </div>
+
+  <!-- STAFF TARGETS -->
+  <div class="card hidden" id="stCard">
+    <h2 style="font-size:1rem;margin-bottom:10px;">🎯 My Performance Targets</h2>
+    <table id="stTable">
+      <thead><tr><th>Title</th><th>Metric</th><th>Progress</th><th>Period</th><th>Status</th></tr></thead>
+      <tbody id="stRows"></tbody>
+    </table>
+    <p id="stEmpty" style="color:#94a3b8;font-size:.85rem;">No targets assigned yet.</p>
+  </div>
+
+  <!-- M&E QUERIES -->
+  <div class="card hidden" id="mqCard">
+    <h2 style="font-size:1rem;margin-bottom:10px;">📊 M&E Queries</h2>
+    <table id="mqTable">
+      <thead><tr><th>Ref #</th><th>Subject</th><th>Category</th><th>Status</th><th>Raised By</th></tr></thead>
+      <tbody id="mqRows"></tbody>
+    </table>
+    <p id="mqEmpty" style="color:#94a3b8;font-size:.85rem;">No M&E queries yet.</p>
+  </div>
+
+  <!-- NOTIFICATIONS -->
+  <div class="card hidden" id="ntCard">
+    <h2 style="font-size:1rem;margin-bottom:10px;">🔔 Notifications <span id="ntBadge" style="background:#f87171;color:#0f172a;border-radius:999px;padding:2px 10px;font-size:.75rem;"></span></h2>
+    <table id="ntTable">
+      <thead><tr><th>Title</th><th>Message</th><th>Type</th><th>When</th><th>Read</th></tr></thead>
+      <tbody id="ntRows"></tbody>
+    </table>
+    <p id="ntEmpty" style="color:#94a3b8;font-size:.85rem;">No notifications yet.</p>
+  </div>
+
+  <!-- APPEALS -->
+  <div class="card hidden" id="apCard">
+    <h2 style="font-size:1rem;margin-bottom:10px;">⚖️ Appeals</h2>
+    <table id="apTable">
+      <thead><tr><th>Ref #</th><th>Appellant</th><th>Status</th><th>Disputed</th><th>Adjusted</th><th>Decided By</th></tr></thead>
+      <tbody id="apRows"></tbody>
+    </table>
+    <p id="apEmpty" style="color:#94a3b8;font-size:.85rem;">No appeals filed yet.</p>
+  </div>
+
+  <!-- PAYMENTS -->
+  <div class="card hidden" id="payCard">
+    <h2 style="font-size:1rem;margin-bottom:10px;">🧾 Payments & Receipts</h2>
+    <table id="payTable">
+      <thead><tr><th>Receipt #</th><th>Amount</th><th>Method</th><th>Date</th><th>Received By</th></tr></thead>
+      <tbody id="payRows"></tbody>
+    </table>
+    <p id="payEmpty" style="color:#94a3b8;font-size:.85rem;">No payments recorded yet.</p>
+  </div>
+
+  <!-- ENFORCEMENT VISITS -->
+  <div class="card hidden" id="evCard">
+    <h2 style="font-size:1rem;margin-bottom:10px;">🚔 Enforcement Visits</h2>
+    <table id="evTable">
+      <thead><tr><th>Visit #</th><th>Date</th><th>Status</th><th>Delivery</th><th>Outstanding</th><th>Payment</th></tr></thead>
+      <tbody id="evRows"></tbody>
+    </table>
+    <p id="evEmpty" style="color:#94a3b8;font-size:.85rem;">No enforcement visits yet.</p>
+  </div>
+
+  <!-- ASSESSMENTS -->
+  <div class="card hidden" id="asmCard">
+    <h2 style="font-size:1rem;margin-bottom:10px;">🧾 Tax Assessments</h2>
+    <table id="asmTable">
+      <thead><tr><th>Ref #</th><th>FY</th><th>Assessed Value</th><th>Annual Tax</th><th>Status</th></tr></thead>
+      <tbody id="asmRows"></tbody>
+    </table>
+    <p id="asmEmpty" style="color:#94a3b8;font-size:.85rem;">No assessments yet.</p>
+  </div>
+
+  <!-- TAX BILLS -->
+  <div class="card hidden" id="tbCard">
+    <h2 style="font-size:1rem;margin-bottom:10px;">💵 Tax Bills</h2>
+    <table id="tbTable">
+      <thead><tr><th>Bill #</th><th>FY</th><th>Amount Due</th><th>Paid</th><th>Due Date</th><th>Status</th></tr></thead>
+      <tbody id="tbRows"></tbody>
+    </table>
+    <p id="tbEmpty" style="color:#94a3b8;font-size:.85rem;">No tax bills yet.</p>
+  </div>
+
+  <!-- VALUATIONS -->
+  <div class="card hidden" id="valCard">
+    <h2 style="font-size:1rem;margin-bottom:10px;">📋 Valuations</h2>
+    <table id="valTable">
+      <thead><tr><th>Ref #</th><th>Bill</th><th>Owner</th><th>Assessed</th><th>Total Value</th><th>Annual Tax</th><th>Status</th></tr></thead>
+      <tbody id="valRows"></tbody>
+    </table>
+    <p id="valEmpty" style="color:#94a3b8;font-size:.85rem;">No valuations yet.</p>
+  </div>
+
+  <!-- PROPERTIES -->
+  <div class="card hidden" id="propCard">
+    <h2 style="font-size:1rem;margin-bottom:10px;">🏠 Property Bill</h2>
+    <table id="propTable">
+      <thead><tr><th>ID</th><th>Bill Number</th><th>Address</th><th>Case Status</th><th>Current Owner</th></tr></thead>
+      <tbody id="propRows"></tbody>
+    </table>
+    <p id="propEmpty" style="color:#94a3b8;font-size:.85rem;">No property bills in the database yet.</p>
+  </div>
+</div>
+
+<script>
+let token = null;
+
+function setStatus(msg, cls) {
+  const el = document.getElementById('status');
+  el.textContent = msg;
+  el.className = cls;
+}
+
+async function api(method, url, body) {
+  const opts = {
+    method,
+    headers: { 'Accept': 'application/json' },
+  };
+  if (body !== undefined) opts.headers['Content-Type'] = 'application/json';
+  if (token) opts.headers['Authorization'] = 'Bearer ' + token;
+  if (body !== undefined) opts.body = JSON.stringify(body);
+  return fetch(url, opts);
+}
+
+async function login() {
+  const btn = document.getElementById('btnLogin');
+  btn.disabled = true;
+  setStatus('Contacting server…', 'info');
+  try {
+    await fetch('/sanctum/csrf-cookie');
+    const res = await api('POST', '/api/v1/auth/login', {
+      email: document.getElementById('email').value,
+      password: document.getElementById('password').value,
+    });
+    const json = await res.json();
+    if (res.ok && json.data && json.data.token) {
+      token = json.data.token;
+      const u = json.data.user;
+      document.getElementById('userInfo').innerHTML =
+        '<b>Logged in as:</b> ' + u.name + '<br>' +
+        '<b>Email:</b> ' + u.email + '<br>' +
+        '<b>Role ID:</b> ' + u.role_id + ' &nbsp;·&nbsp; <b>Status:</b> ' + (u.is_active ? 'Active ✅' : 'Inactive');
+      document.getElementById('tokenBox').textContent = 'TOKEN: ' + token;
+      document.getElementById('loginCard').classList.add('hidden');
+      document.getElementById('userCard').classList.remove('hidden');
+      setStatus('✅ Login successful (HTTP ' + res.status + ') — token received', 'ok');
+    } else if (json.errors) {
+      setStatus('❌ Validation: ' + JSON.stringify(json.errors), 'err');
+    } else {
+      setStatus('❌ HTTP ' + res.status + ' — ' + (json.message || 'Login failed'), 'err');
+    }
+  } catch (e) {
+    setStatus('❌ Cannot reach server. Is `php artisan serve` running?', 'err');
+  }
+  btn.disabled = false;
+}
+
+async function testMe() {
+  setStatus('Calling /auth/me…', 'info');
+  try {
+    const res = await api('GET', '/api/v1/auth/me');
+    const json = await res.json();
+    if (res.ok) {
+      setStatus('✅ /auth/me returned: ' + json.data.email + ' (HTTP ' + res.status + ')', 'ok');
+    } else {
+      setStatus('❌ HTTP ' + res.status + ' — ' + (json.message || ''), 'err');
+    }
+  } catch (e) {
+    setStatus('❌ Request failed', 'err');
+  }
+}
+
+async function loadProperties() {
+  setStatus('Loading property bills…', 'info');
+  try {
+    const res = await api('GET', '/api/v1/property-bills');
+    const json = await res.json();
+    if (res.ok) {
+      const rows = (json.data && json.data.data) ? json.data.data : [];
+      document.getElementById('propCard').classList.remove('hidden');
+      document.getElementById('propEmpty').style.display = rows.length ? 'none' : 'block';
+      document.getElementById('propTable').style.display = rows.length ? 'table' : 'none';
+      document.getElementById('propRows').innerHTML = rows.map(function (p) {
+        const owner = p.current_owner ? p.current_owner.owner_name : '—';
+        return '<tr><td>#' + p.id + '</td><td>' + (p.bill_number || '') + '</td><td>'
+          + (p.property_address || '—') + '</td><td>' + (p.case_status || '') + '</td><td>' + owner + '</td></tr>';
+      }).join('');
+      setStatus('✅ Property Bills loaded (HTTP ' + res.status + ') — ' + rows.length + ' record(s)', 'ok');
+    } else {
+      setStatus('❌ HTTP ' + res.status + ' — ' + (json.message || ''), 'err');
+    }
+  } catch (e) {
+    setStatus('❌ Request failed', 'err');
+  }
+}
+
+async function loadValuations() {
+  setStatus('Loading valuations…', 'info');
+  try {
+    const res = await api('GET', '/api/v1/valuations');
+    const json = await res.json();
+    if (res.ok) {
+      const rows = (json.data && json.data.data) ? json.data.data : [];
+      document.getElementById('valCard').classList.remove('hidden');
+      document.getElementById('valEmpty').style.display = rows.length ? 'none' : 'block';
+      document.getElementById('valTable').style.display = rows.length ? 'table' : 'none';
+      document.getElementById('valRows').innerHTML = rows.map(function (v) {
+        return '<tr><td>' + (v.valuation_number || '') + '</td><td>'
+          + ((v.property_bill && v.property_bill.bill_number) || '—') + '</td><td>'
+          + (v.owner_name || '—') + '</td><td>' + (v.assessment_date || '—') + '</td><td>'
+          + 'US$ ' + Number(v.total_value || 0).toLocaleString() + '</td><td>'
+          + 'US$ ' + (v.annual_tax != null ? Number(v.annual_tax).toLocaleString() : '—') + '</td><td>'
+          + (v.status || '') + '</td></tr>';
+      }).join('');
+      setStatus('✅ Valuations loaded (HTTP ' + res.status + ') — ' + rows.length + ' record(s)', 'ok');
+    } else {
+      setStatus('❌ HTTP ' + res.status + ' — ' + (json.message || ''), 'err');
+    }
+  } catch (e) {
+    setStatus('❌ Request failed', 'err');
+  }
+}
+
+async function loadAssessments() {
+  setStatus('Loading assessments…', 'info');
+  try {
+    const res = await api('GET', '/api/v1/tax-assessments');
+    const json = await res.json();
+    if (res.ok) {
+      const rows = (json.data && json.data.data) ? json.data.data : [];
+      document.getElementById('asmCard').classList.remove('hidden');
+      document.getElementById('asmEmpty').style.display = rows.length ? 'none' : 'block';
+      document.getElementById('asmTable').style.display = rows.length ? 'table' : 'none';
+      document.getElementById('asmRows').innerHTML = rows.map(function (a) {
+        return '<tr><td>' + (a.assessment_number || '') + '</td><td>' + (a.fiscal_year || '')
+          + '</td><td>US$ ' + Number(a.assessed_value || 0).toLocaleString()
+          + '</td><td>US$ ' + Number(a.annual_tax || 0).toLocaleString()
+          + '</td><td>' + (a.status || '') + '</td></tr>';
+      }).join('');
+      setStatus('✅ Assessments loaded (HTTP ' + res.status + ') — ' + rows.length + ' record(s)', 'ok');
+    } else {
+      setStatus('❌ HTTP ' + res.status + ' — ' + (json.message || ''), 'err');
+    }
+  } catch (e) {
+    setStatus('❌ Request failed', 'err');
+  }
+}
+
+async function loadTaxBills() {
+  setStatus('Loading tax bills…', 'info');
+  try {
+    const res = await api('GET', '/api/v1/tax-bills');
+    const json = await res.json();
+    if (res.ok) {
+      const rows = (json.data && json.data.data) ? json.data.data : [];
+      document.getElementById('tbCard').classList.remove('hidden');
+      document.getElementById('tbEmpty').style.display = rows.length ? 'none' : 'block';
+      document.getElementById('tbTable').style.display = rows.length ? 'table' : 'none';
+      document.getElementById('tbRows').innerHTML = rows.map(function (b) {
+        return '<tr><td>' + (b.bill_number || '') + '</td><td>' + (b.fiscal_year || '')
+          + '</td><td>US$ ' + Number(b.amount_due || 0).toLocaleString()
+          + '</td><td>US$ ' + Number(b.amount_paid || 0).toLocaleString()
+          + '</td><td>' + (b.due_date || '—') + '</td><td>' + (b.status || '') + '</td></tr>';
+      }).join('');
+      setStatus('✅ Tax bills loaded (HTTP ' + res.status + ') — ' + rows.length + ' record(s)', 'ok');
+    } else {
+      setStatus('❌ HTTP ' + res.status + ' — ' + (json.message || ''), 'err');
+    }
+  } catch (e) {
+    setStatus('❌ Request failed', 'err');
+  }
+}
+
+async function loadVisits() {
+  setStatus('Loading enforcement visits…', 'info');
+  try {
+    const res = await api('GET', '/api/v1/enforcement-visits');
+    const json = await res.json();
+    if (res.ok) {
+      const rows = (json.data && json.data.data) ? json.data.data : [];
+      document.getElementById('evCard').classList.remove('hidden');
+      document.getElementById('evEmpty').style.display = rows.length ? 'none' : 'block';
+      document.getElementById('evTable').style.display = rows.length ? 'table' : 'none';
+      document.getElementById('evRows').innerHTML = rows.map(function (v) {
+        return '<tr><td>' + (v.visit_number || '') + '</td><td>' + (v.visit_date || '—')
+          + '</td><td>' + (v.status || '') + '</td><td>' + (v.bill_delivery_status || '—')
+          + '</td><td>US$ ' + Number(v.outstanding_balance || 0).toLocaleString()
+          + '</td><td>' + (v.payment_status || '') + '</td></tr>';
+      }).join('');
+      setStatus('✅ Enforcement visits loaded (HTTP ' + res.status + ') — ' + rows.length + ' record(s)', 'ok');
+    } else {
+      setStatus('❌ HTTP ' + res.status + ' — ' + (json.message || ''), 'err');
+    }
+  } catch (e) {
+    setStatus('❌ Request failed', 'err');
+  }
+}
+
+async function loadPayments() {
+  setStatus('Loading payments…', 'info');
+  try {
+    const res = await api('GET', '/api/v1/payments');
+    const json = await res.json();
+    if (res.ok) {
+      const rows = (json.data && json.data.data) ? json.data.data : [];
+      document.getElementById('payCard').classList.remove('hidden');
+      document.getElementById('payEmpty').style.display = rows.length ? 'none' : 'block';
+      document.getElementById('payTable').style.display = rows.length ? 'table' : 'none';
+      document.getElementById('payRows').innerHTML = rows.map(function (p) {
+        return '<tr><td>' + (p.receipt_number || '') + '</td><td>'
+          + 'US$ ' + Number(p.amount_paid || 0).toLocaleString() + '</td><td>' + (p.payment_method || '')
+          + '</td><td>' + (p.payment_date || '—') + '</td><td>'
+          + ((p.received_by && p.received_by.name) || '—') + '</td></tr>';
+      }).join('');
+      setStatus('✅ Payments loaded (HTTP ' + res.status + ') — ' + rows.length + ' record(s)', 'ok');
+    } else {
+      setStatus('❌ HTTP ' + res.status + ' — ' + (json.message || ''), 'err');
+    }
+  } catch (e) {
+    setStatus('❌ Request failed', 'err');
+  }
+}
+
+async function loadAppeals() {
+  setStatus('Loading appeals…', 'info');
+  try {
+    const res = await api('GET', '/api/v1/appeals');
+    const json = await res.json();
+    if (res.ok) {
+      const rows = (json.data && json.data.data) ? json.data.data : [];
+      document.getElementById('apCard').classList.remove('hidden');
+      document.getElementById('apEmpty').style.display = rows.length ? 'none' : 'block';
+      document.getElementById('apTable').style.display = rows.length ? 'table' : 'none';
+      document.getElementById('apRows').innerHTML = rows.map(function (a) {
+        return '<tr><td>' + (a.appeal_number || '') + '</td><td>' + (a.appellant_name || '—')
+          + '</td><td>' + (a.status || '') + '</td><td>'
+          + (a.disputed_amount != null ? 'US$ ' + Number(a.disputed_amount).toLocaleString() : '—')
+          + '</td><td>' + (a.adjusted_amount != null ? 'US$ ' + Number(a.adjusted_amount).toLocaleString() : '—')
+          + '</td><td>' + ((a.decided_by && a.decided_by.name) || '—') + '</td></tr>';
+      }).join('');
+      setStatus('✅ Appeals loaded (HTTP ' + res.status + ') — ' + rows.length + ' record(s)', 'ok');
+    } else {
+      setStatus('❌ HTTP ' + res.status + ' — ' + (json.message || ''), 'err');
+    }
+  } catch (e) {
+    setStatus('❌ Request failed', 'err');
+  }
+}
+
+async function loadNotifications() {
+  setStatus('Loading notifications…', 'info');
+  try {
+    const res = await api('GET', '/api/v1/notifications?per_page=20');
+    const json = await res.json();
+    if (res.ok) {
+      const rows = (json.data && json.data.data) ? json.data.data : [];
+      const uc = await api('GET', '/api/v1/notifications/unread-count');
+      const ucJson = await uc.json();
+      const unread = (ucJson.data && ucJson.data.unread_count) || 0;
+      document.getElementById('ntBadge').textContent = unread + ' unread';
+      document.getElementById('ntCard').classList.remove('hidden');
+      document.getElementById('ntEmpty').style.display = rows.length ? 'none' : 'block';
+      document.getElementById('ntTable').style.display = rows.length ? 'table' : 'none';
+      document.getElementById('ntRows').innerHTML = rows.map(function (n) {
+        return '<tr style="' + (n.read_at ? '' : 'font-weight:600;') + '"><td>' + (n.title || '')
+          + '</td><td>' + ((n.message || '—').substring(0, 80)) + '</td><td>' + (n.type || '')
+          + '</td><td>' + ((n.created_at || '').substring(0, 16).replace('T', ' '))
+          + '</td><td>' + (n.read_at ? '✓' : '● new') + '</td></tr>';
+      }).join('');
+      setStatus('✅ Notifications loaded — ' + unread + ' unread', 'ok');
+    } else {
+      setStatus('❌ HTTP ' + res.status + ' — ' + (json.message || ''), 'err');
+    }
+  } catch (e) {
+    setStatus('❌ Request failed', 'err');
+  }
+}
+
+async function loadMeQueries() {
+  setStatus('Loading M&E queries…', 'info');
+  try {
+    const res = await api('GET', '/api/v1/me-queries');
+    const json = await res.json();
+    if (res.ok) {
+      const rows = (json.data && json.data.data) ? json.data.data : [];
+      document.getElementById('mqCard').classList.remove('hidden');
+      document.getElementById('mqEmpty').style.display = rows.length ? 'none' : 'block';
+      document.getElementById('mqTable').style.display = rows.length ? 'table' : 'none';
+      document.getElementById('mqRows').innerHTML = rows.map(function (q) {
+        return '<tr><td>' + (q.query_number || '') + '</td><td>' + ((q.subject || '—').substring(0, 40))
+          + '</td><td>' + (q.category || '') + '</td><td>' + (q.status || '')
+          + '</td><td>' + ((q.raised_by && q.raised_by.name) || '—') + '</td></tr>';
+      }).join('');
+      setStatus('✅ M&E queries loaded (HTTP ' + res.status + ') — ' + rows.length + ' record(s)', 'ok');
+    } else {
+      setStatus('❌ HTTP ' + res.status + ' — ' + (json.message || ''), 'err');
+    }
+  } catch (e) {
+    setStatus('❌ Request failed', 'err');
+  }
+}
+
+async function loadMyTargets() {
+  setStatus('Loading targets…', 'info');
+  try {
+    const res = await api('GET', '/api/v1/staff-targets?mine=1');
+    const json = await res.json();
+    if (res.ok) {
+      const rows = (json.data && json.data.data) ? json.data.data : [];
+      document.getElementById('stCard').classList.remove('hidden');
+      document.getElementById('stEmpty').style.display = rows.length ? 'none' : 'block';
+      document.getElementById('stTable').style.display = rows.length ? 'table' : 'none';
+      document.getElementById('stRows').innerHTML = rows.map(function (t) {
+        const pct = t.target_value > 0 ? Math.min(100, Math.round((t.achieved_value / t.target_value) * 100)) : 0;
+        return '<tr><td>' + (t.title || '') + '</td><td>' + (t.metric_type || '')
+          + '</td><td>US$ ' + Number(t.achieved_value || 0).toLocaleString() + ' / '
+          + 'US$ ' + Number(t.target_value || 0).toLocaleString() + ' (' + pct + '%)'
+          + '</td><td>' + (t.period_start || '') + ' → ' + (t.period_end || '')
+          + '</td><td>' + (t.status || '') + '</td></tr>';
+      }).join('');
+      setStatus('✅ Targets loaded (HTTP ' + res.status + ') — ' + rows.length + ' record(s)', 'ok');
+    } else {
+      setStatus('❌ HTTP ' + res.status + ' — ' + (json.message || ''), 'err');
+    }
+  } catch (e) {
+    setStatus('❌ Request failed', 'err');
+  }
+}
+
+async function loadRegQueue() {
+  setStatus('Loading registration queue…', 'info');
+  try {
+    const res = await api('GET', '/api/v1/registration-queue');
+    const json = await res.json();
+    if (res.ok) {
+      const rows = (json.data && json.data.data) ? json.data.data : [];
+      document.getElementById('rqCard').classList.remove('hidden');
+      document.getElementById('rqEmpty').style.display = rows.length ? 'none' : 'block';
+      document.getElementById('rqTable').style.display = rows.length ? 'table' : 'none';
+      document.getElementById('rqRows').innerHTML = rows.map(function (q) {
+        return '<tr><td>' + (q.queue_number || '') + '</td><td>'
+          + ((q.property_bill && q.property_bill.bill_number) || '—')
+          + '</td><td>' + (q.status || '') + '</td><td>'
+          + ((q.assigned_to && q.assigned_to.name) || '—') + '</td><td>'
+          + ((q.reviewed_at || '').substring(0, 16).replace('T', ' ') || '—') + '</td></tr>';
+      }).join('');
+      setStatus('✅ Registration queue loaded (HTTP ' + res.status + ') — ' + rows.length + ' record(s)', 'ok');
+    } else {
+      setStatus('❌ HTTP ' + res.status + ' — ' + (json.message || ''), 'err');
+    }
+  } catch (e) {
+    setStatus('❌ Request failed', 'err');
+  }
+}
+
+async function loadAuditLogs() {
+  setStatus('Loading audit trail…', 'info');
+  try {
+    const res = await api('GET', '/api/v1/audit-logs?per_page=20');
+    const json = await res.json();
+    if (res.ok) {
+      const rows = (json.data && json.data.data) ? json.data.data : [];
+      document.getElementById('alCard').classList.remove('hidden');
+      document.getElementById('alEmpty').style.display = rows.length ? 'none' : 'block';
+      document.getElementById('alTable').style.display = rows.length ? 'table' : 'none';
+      document.getElementById('alRows').innerHTML = rows.map(function (l) {
+        const entity = (l.auditable_type || '').replace('App\\\\Models\\\\', '') + ' #' + l.auditable_id;
+        const keys = Object.keys(l.new_values || {}).slice(0, 3).join(', ');
+        return '<tr><td>' + ((l.created_at || '').substring(0, 16).replace('T', ' '))
+          + '</td><td>' + ((l.actor && l.actor.name) || 'system')
+          + '</td><td>' + (l.action || '')
+          + '</td><td>' + entity
+          + '</td><td style="font-size:.75rem;">' + (keys || '—') + '</td></tr>';
+      }).join('');
+      setStatus('✅ Audit trail loaded (HTTP ' + res.status + ') — ' + rows.length + ' entries', 'ok');
+    } else {
+      setStatus('❌ HTTP ' + res.status + ' — ' + (json.message || ''), 'err');
+    }
+  } catch (e) {
+    setStatus('❌ Request failed', 'err');
+  }
+}
+
+async function logout() {
+  setStatus('Logging out…', 'info');
+  try {
+    const res = await api('POST', '/api/v1/auth/logout');
+    setStatus(res.ok ? '✅ Logged out — token revoked' : '⚠️ Logout returned HTTP ' + res.status, res.ok ? 'ok' : 'err');
+  } catch (e) {}
+  token = null;
+  document.getElementById('loginCard').classList.remove('hidden');
+  document.getElementById('userCard').classList.add('hidden');
+  document.getElementById('propCard').classList.add('hidden');
+  document.getElementById('valCard').classList.add('hidden');
+  document.getElementById('asmCard').classList.add('hidden');
+  document.getElementById('tbCard').classList.add('hidden');
+  document.getElementById('evCard').classList.add('hidden');
+  document.getElementById('payCard').classList.add('hidden');
+  document.getElementById('apCard').classList.add('hidden');
+  document.getElementById('ntCard').classList.add('hidden');
+  document.getElementById('mqCard').classList.add('hidden');
+  document.getElementById('stCard').classList.add('hidden');
+  document.getElementById('rqCard').classList.add('hidden');
+  document.getElementById('alCard').classList.add('hidden');
+}
+</script>
+</body>
+</html>
