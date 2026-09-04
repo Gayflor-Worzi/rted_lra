@@ -82,7 +82,7 @@
 <body>
 <div class="wrap">
   <h1>🔧 RETD_LRA — Backend Test Console</h1>
-  <p class="sub">Temporary developer page · talks directly to your local API at <code>http://localhost:8000/api/v1</code></p>
+  <p class="sub"><b>LOCAL-ONLY dev tool — do not deploy.</b> Talks to your local API at <code>http://localhost:8000</code></p>
 
   <!-- LOGIN -->
   <div class="card" id="loginCard">
@@ -238,6 +238,7 @@
 
 <script>
 let token = null;
+const BASE = 'http://localhost:8000';
 
 function setStatus(msg, cls) {
   const el = document.getElementById('status');
@@ -253,7 +254,7 @@ async function api(method, url, body) {
   if (body !== undefined) opts.headers['Content-Type'] = 'application/json';
   if (token) opts.headers['Authorization'] = 'Bearer ' + token;
   if (body !== undefined) opts.body = JSON.stringify(body);
-  return fetch(url, opts);
+  return fetch(BASE + url, opts);
 }
 
 async function login() {
@@ -261,7 +262,7 @@ async function login() {
   btn.disabled = true;
   setStatus('Contacting server…', 'info');
   try {
-    await fetch('/sanctum/csrf-cookie');
+    await fetch(BASE + '/sanctum/csrf-cookie');
     const res = await api('POST', '/api/v1/auth/login', {
       email: document.getElementById('email').value,
       password: document.getElementById('password').value,

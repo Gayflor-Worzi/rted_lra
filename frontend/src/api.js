@@ -2,7 +2,7 @@ import axios from 'axios'
 
 export const TOKEN_KEY = 'retd_token'
 
-const api = axios.create({ baseURL: '/api/v1', headers: { Accept: 'application/json' } })
+const api = axios.create({ baseURL: import.meta.env.VITE_API_BASE || '/api/v1', headers: { Accept: 'application/json' } })
 
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem(TOKEN_KEY)

@@ -8,14 +8,6 @@ use Symfony\Component\HttpFoundation\Response;
 
 class CorsMiddleware
 {
-    private array $allowedOrigins = [
-        'http://localhost:5173',
-        'http://127.0.0.1:5173',
-        'http://localhost:8000',
-        'http://127.0.0.1:8000',
-        'http://localhost:3000',
-    ];
-
     public function handle(Request $request, Closure $next): Response
     {
         // Handle OPTIONS preflight immediately
@@ -27,7 +19,7 @@ class CorsMiddleware
 
         $origin = $request->header('Origin');
 
-        if ($origin && in_array($origin, $this->allowedOrigins, true)) {
+        if ($origin && in_array($origin, config('cors.allowed_origins', []), true)) {
             $response->headers->set('Access-Control-Allow-Origin', $origin);
             $response->headers->set('Access-Control-Allow-Credentials', 'true');
         }
