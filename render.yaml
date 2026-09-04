@@ -13,9 +13,8 @@ services:
     region: oregon
     buildCommand: |
       composer install --no-dev --optimize-autoloader
-      php artisan config:cache
-      php artisan route:cache
-      php artisan view:cache
+      # NOTE: no config:cache / route:cache — config would freeze build-time
+      # env values (empty secrets) and route:cache can't serialize Closures.
     startCommand: |
       php artisan migrate --force --no-interaction
       php -S 0.0.0.0:$PORT -t public server.php
@@ -44,13 +43,13 @@ services:
       - key: DB_CONNECTION
         value: pgsql
       - key: DB_HOST
-        value: db.yourproject.supabase.co
+        value: aws-1-eu-west-1.pooler.supabase.com
       - key: DB_PORT
         value: "5432"
       - key: DB_DATABASE
         value: postgres
       - key: DB_USERNAME
-        value: postgres
+        value: postgres.jtwibiorwtqzvsjvmlcf
       - key: DB_PASSWORD
         sync: false
       - key: DB_SSLMODE
