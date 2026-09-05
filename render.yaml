@@ -8,16 +8,10 @@
 services:
   - type: web
     name: rted-api
-    runtime: php
+    runtime: docker
     plan: free
     region: oregon
-    buildCommand: |
-      composer install --no-dev --optimize-autoloader
-      # NOTE: no config:cache / route:cache — config would freeze build-time
-      # env values (empty secrets) and route:cache can't serialize Closures.
-    startCommand: |
-      php artisan migrate --force --no-interaction
-      php -S 0.0.0.0:$PORT -t public server.php
+    dockerfilePath: Dockerfile
     healthCheckPath: /api/v1/meta
     envVars:
       - key: APP_NAME
@@ -72,8 +66,6 @@ services:
   - type: web
     name: rted-web
     runtime: static
-    plan: free
-    region: oregon
     rootDir: frontend
     buildCommand: npm install && npm run build
     staticPublishPath: ./dist
