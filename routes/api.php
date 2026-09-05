@@ -75,6 +75,7 @@ Route::prefix('v1')->middleware(['auth:sanctum'])->group(function () {
         Route::post('/users', [UsersController::class, 'store'])->middleware('permission:staff.create');
         Route::put('/users/{user}', [UsersController::class, 'update'])->middleware('permission:staff.edit');
         Route::patch('/users/{user}/active', [UsersController::class, 'setActive'])->middleware('permission:staff.activate');
+        Route::post('/users/{user}/force-password-reset', [UsersController::class, 'forcePasswordReset'])->middleware('permission:staff.edit');
         Route::get('/users/{user}/effective-permissions', [UsersController::class, 'effectivePermissions']);
         Route::put('/users/{user}/permissions', [UsersController::class, 'setPermissions']);
 

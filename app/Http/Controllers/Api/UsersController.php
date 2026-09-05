@@ -169,6 +169,33 @@ class UsersController extends Controller
     }
 
     /**
+     * Force the account holder to choose a new password before they can use the
+     * system again (first-login reset). Ends existing sessions so the change is
+     * effective immediately.
+     */
+    public function forcePasswordReset(Request $request, User $user)
+    {
+        abort_unless($request->user()->canPermission('staff.edit'), 403, 'Missing permission: staff.edit');
+
+        abort_unless($user->is_active, 422, 'Cannot force a password reset on a deactivated account.');
+
+        $this->audit->record($user, 'user.password_reset_forced', $request->user()->id, [
+            'must_reset_password' => $user->must_reset_password,
+        ], [
+            'must_reset_password' => true,
+        ]);
+
+        $user->update(['must_reset_password' => true]);
+        // End current sessions: the holder must sign in again and reset first.
+        $user->tokens()->delete();
+
+        return response()->json([
+            'data' => ['id' => $user->id, 'must_reset_password' => true],
+            'message' => "Password reset forced for {$user->full_name}. They must set a new password on their next sign-in.",
+        ]);
+    }
+
+    /**
      * Effective permission view for a staff member (spec 12): role, section,
      * data scope and the full granular catalogue marked granted/denied.
      */

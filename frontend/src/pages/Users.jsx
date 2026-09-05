@@ -63,6 +63,16 @@ export default function Users() {
     } catch (ex) { setErr({ message: errMsg(ex) }) }
   }
 
+  const forceReset = async (u) => {
+    if (!window.confirm(`Force ${u.full_name} to set a new password on their next sign-in? Their current sessions will be ended.`)) return
+    try {
+      await api.post(`/users/${u.id}/force-password-reset`)
+      setFlash(`Password reset forced for ${u.full_name}.`)
+      setTimeout(() => setFlash(''), 3000)
+      loadUsers()
+    } catch (ex) { setErr({ message: errMsg(ex) }) }
+  }
+
   return (
     <div className="space-y-4">
       <PageTitle sub="Staff accounts, activation and team wiring."
@@ -103,6 +113,7 @@ export default function Users() {
                 <th className="py-2 pr-3">Status</th>
                 {canInspect && <th className="py-2 pr-3">Effective permissions</th>}
                 {can('staff.activate') && <th className="py-2 pr-3">Action</th>}
+                {can('staff.edit') && <th className="py-2 pr-3">Password</th>}
               </tr>
             </thead>
             <tbody>
@@ -124,6 +135,11 @@ export default function Users() {
                       <Btn tone={u.is_active ? 'white' : 'success'} onClick={() => toggleActive(u)}>
                         {u.is_active ? 'Deactivate' : 'Activate'}
                       </Btn>
+                    </td>
+                  )}
+                  {can('staff.edit') && (
+                    <td className="py-2.5 pr-3">
+                      <Btn tone="white" onClick={() => forceReset(u)}>Force reset</Btn>
                     </td>
                   )}
                 </tr>
