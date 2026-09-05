@@ -189,7 +189,7 @@ class TaskController extends Controller
         $perPage = max(1, min((int) env('PAGINATION_MAX_PAGE', 200), (int) $request->query('per_page', 25)));
 
         $rows = $query
-            ->orderByRaw("FIELD(`tasks`.`status`, 'Escalated','30-Day Warning','72-Hour Warning','Assigned','Out for Delivery') DESC")
+            ->orderByRaw("CASE tasks.status WHEN 'Escalated' THEN 1 WHEN '30-Day Warning' THEN 2 WHEN '72-Hour Warning' THEN 3 WHEN 'Assigned' THEN 4 WHEN 'Out for Delivery' THEN 5 ELSE 6 END DESC")
             ->orderByDesc('tasks.id')
             ->paginate($perPage)
             ->withQueryString();

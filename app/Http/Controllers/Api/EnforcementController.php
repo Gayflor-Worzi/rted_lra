@@ -41,7 +41,7 @@ class EnforcementController extends Controller
             ->with('assignedBy:id,full_name')
             ->withCount('engagements')
             ->whereNotIn('status', ['Resolved', 'Closed', 'Paid'])
-            ->orderByRaw("FIELD(`status`, 'Escalated','30-Day Warning','72-Hour Warning','Assigned','Out for Delivery') DESC")
+            ->orderByRaw("CASE tasks.status WHEN 'Escalated' THEN 1 WHEN '30-Day Warning' THEN 2 WHEN '72-Hour Warning' THEN 3 WHEN 'Assigned' THEN 4 WHEN 'Out for Delivery' THEN 5 ELSE 6 END DESC")
             ->orderByDesc('id');
 
         $rows = $query->paginate($request->query('per_page', 50))->withQueryString();

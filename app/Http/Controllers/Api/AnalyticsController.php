@@ -14,6 +14,7 @@ use App\Models\User;
 use App\Models\Valuation;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Consolidated dashboard analytics engine.
@@ -249,10 +250,10 @@ class AnalyticsController extends Controller
         $owner = self::ownerColumn($metric);
         $query->whereExists(function (Builder $q) use ($owner, $section) {
             $q->selectRaw('1')
-                ->from('users as FU')
-                ->join('sections as FS', 'FS.id', '=', 'FU.section_id')
-                ->whereRaw("FU.id = {$owner}")
-                ->where('FS.name', $section);
+                ->from('users as fu')
+                ->join('sections as fs', 'fs.id', '=', 'fu.section_id')
+                ->whereRaw("fu.id = {$owner}")
+                ->where('fs.name', $section);
         });
     }
 
@@ -432,7 +433,7 @@ class AnalyticsController extends Controller
         $query->selectRaw('COALESCE('.$expr.', \'—\') as label')
             ->selectRaw($sum ? "SUM({$sum}) as value" : 'COUNT(*) as value')
             ->selectRaw($idExpr ? "{$idExpr} as owner_id" : 'null as owner_id')
-            ->groupBy('label')
+            ->groupBy(DB::raw($expr))
             ->when($idExpr, fn (Builder $q) => $q->groupBy($idExpr));
 
         $rows = $query->orderByDesc('value')
@@ -477,7 +478,7 @@ class AnalyticsController extends Controller
         $query->selectRaw('COALESCE('.$expr.', \'—\') as label')
             ->selectRaw('COUNT(*) as value')
             ->selectRaw($idExpr ? "{$idExpr} as owner_id" : 'null as owner_id')
-            ->groupBy('label')
+            ->groupBy(DB::raw($expr))
             ->when($idExpr, fn (Builder $q) => $q->groupBy($idExpr));
 
         $rows = $query->orderByDesc('value')->get();
@@ -506,11 +507,11 @@ class AnalyticsController extends Controller
 
         // staff
         if ($dim === 'staff') {
-            return ["COALESCE(U.full_name, 'Unassigned')", [
-                fn (Builder $q) => $q->leftJoin('users as U', function ($j) use ($owner) {
-                    $j->on('U.id', '=', $owner)->where('U.is_active', 1);
+            return ["COALESCE(u.full_name, 'Unassigned')", [
+                fn (Builder $q) => $q->leftJoin('users as u', function ($j) use ($owner) {
+                    $j->on('u.id', '=', $owner)->where('u.is_active', true);
                 }),
-            ], 'U.id'];
+            ], 'u.id'];
         }
 
         // section
@@ -519,32 +520,32 @@ class AnalyticsController extends Controller
                 return ["tasks.section", [], null];
             }
 
-            return ['COALESCE(S.name, \'—\')', [
-                fn (Builder $q) => $q->leftJoin('users as U', 'U.id', '=', "{$owner}"),
-                fn (Builder $q) => $q->leftJoin('sections as S', 'S.id', '=', 'U.section_id'),
+            return ['COALESCE(s.name, \'—\')', [
+                fn (Builder $q) => $q->leftJoin('users as u', 'u.id', '=', "{$owner}"),
+                fn (Builder $q) => $q->leftJoin('sections as s', 's.id', '=', 'u.section_id'),
             ], null];
         }
 
         // temporal
         if ($dim === 'month') {
-            return ["DATE_FORMAT({$t}.{$dateCol}, '%b %Y')", [], null];
+            return [$this->dateGroupExpr('month', "{$t}.{$dateCol}"), [], null];
         }
         if ($dim === 'quarter') {
-            return ["CONCAT('Q', QUARTER({$t}.{$dateCol}), ' ', YEAR({$t}.{$dateCol}))", [], null];
+            return [$this->dateGroupExpr('quarter', "{$t}.{$dateCol}"), [], null];
         }
         if ($dim === 'year') {
-            return ["YEAR({$t}.{$dateCol})", [], null];
+            return [$this->dateGroupExpr('year', "{$t}.{$dateCol}"), [], null];
         }
 
         // bill-shared dimensions need the bill join
         $billJoin = null;
         if (in_array($dim, ['property_classification', 'property_type', 'payment_status'], true) && $metric !== 'bills' && $metric !== 'discoveries' && $metric !== 'valuations') {
-            $billJoin = fn (Builder $q) => $q->leftJoin('property_bills as PB', 'PB.id', '=', "{$t}.bill_id");
+            $billJoin = fn (Builder $q) => $q->leftJoin('property_bills as pb', 'pb.id', '=', "{$t}.bill_id");
         }
         if (in_array($dim, ['property_classification', 'property_type', 'payment_status'], true) && $metric === 'tasks') {
             $billJoin = function (Builder $q) {
-                $q->leftJoin('property_bills as PB', function ($j) {
-                    $j->on('PB.id', '=', 'tasks.reference_id')
+                $q->leftJoin('property_bills as pb', function ($j) {
+                    $j->on('pb.id', '=', 'tasks.reference_id')
                         ->where('tasks.reference_type', 'property_bill');
                 });
             };
@@ -554,18 +555,18 @@ class AnalyticsController extends Controller
             'discoveries.property_classification' => ['COALESCE(property_discoveries.property_classification, \'—\')', [], null],
             'valuations.property_classification' => ['COALESCE(valuations.property_classification, \'—\')', [], null],
             'bills.property_classification' => ['COALESCE(property_bills.property_classification, \'—\')', [], null],
-            'tasks.property_classification', 'collections.property_classification', 'payments.property_classification', 'visits.property_classification' => ['COALESCE(PB.property_classification, \'—\')', $billJoin !== null ? [$billJoin] : [], null],
+            'tasks.property_classification', 'collections.property_classification', 'payments.property_classification', 'visits.property_classification' => ['COALESCE(pb.property_classification, \'—\')', $billJoin !== null ? [$billJoin] : [], null],
             'discoveries.property_type' => ['COALESCE(property_discoveries.property_type, \'—\')', [], null],
             'valuations.property_type' => ['COALESCE(valuations.valuation_type, \'—\')', [], null],
             'bills.property_type' => ['COALESCE(property_bills.property_type, \'—\')', [], null],
-            'tasks.property_type', 'collections.property_type', 'payments.property_type', 'visits.property_type' => ['COALESCE(PB.property_type, \'—\')', $billJoin !== null ? [$billJoin] : [], null],
+            'tasks.property_type', 'collections.property_type', 'payments.property_type', 'visits.property_type' => ['COALESCE(pb.property_type, \'—\')', $billJoin !== null ? [$billJoin] : [], null],
             'tasks.task_type' => ['tasks.task_type', [], null],
             'tasks.task_status' => ['tasks.status', [], null],
             'payments.match_status' => ['COALESCE(payment_verifications.match_status, \'Pending\')', [], null],
             'bills.bill_status' => ['property_bills.case_status', [], null],
             'tasks.enforcement_stage' => [self::ENF_STAGE_TASKS, [], null],
             'bills.enforcement_stage' => [self::ENF_STAGE_BILLS, [], null],
-            'tasks.payment_status' => ['COALESCE(PB.payment_status, \'—\')', $billJoin ? [$billJoin] : [], null],
+            'tasks.payment_status' => ['COALESCE(pb.payment_status, \'—\')', $billJoin ? [$billJoin] : [], null],
             'bills.payment_status' => ['property_bills.payment_status', [], null],
             'payments.payment_status' => ['COALESCE(payment_verifications.verification_status, \'Pending\')', [], null],
             'discoveries.discovery_status' => ['property_discoveries.status', [], null],
@@ -575,7 +576,8 @@ class AnalyticsController extends Controller
             'visits.delivery_status' => ['COALESCE(enforcement_visits.delivery_status, \'—\')', [], null],
             'targets.metric' => ['staff_targets.metric', [], null],
             'targets.completion_status' => ['(CASE WHEN staff_targets.target_value > 0 AND (staff_targets.achieved_value / staff_targets.target_value) >= 1 THEN \'On track\' WHEN staff_targets.target_value > 0 AND (staff_targets.achieved_value / staff_targets.target_value) >= 0.6 THEN \'At risk\' WHEN staff_targets.target_value > 0 THEN \'Behind\' ELSE \'No target value\' END)', [], null],
-            'tasks.completion_status', 'bills.completion_status', 'valuations.completion_status' => ["(CASE WHEN {$t}.status IN ('Resolved','Closed') THEN 'Completed' ELSE 'Open' END)", [], null],
+            'tasks.completion_status', 'valuations.completion_status' => ["(CASE WHEN {$t}.status IN ('Resolved','Closed') THEN 'Completed' ELSE 'Open' END)", [], null],
+            'bills.completion_status' => ["(CASE WHEN property_bills.case_status IN ('Resolved','Closed') THEN 'Completed' ELSE 'Open' END)", [], null],
             default => throw new \InvalidArgumentException("Unsupported group dimension: {$dim} for {$metric}"),
         };
     }
@@ -866,11 +868,7 @@ class AnalyticsController extends Controller
 
         if (in_array($dim, ['month', 'quarter', 'year'], true)) {
             $dateCol = self::METRICS[$metric]['date'];
-            $expr = match ($dim) {
-                'month' => "DATE_FORMAT({$t}.{$dateCol}, '%b %Y')",
-                'quarter' => "CONCAT('Q', QUARTER({$t}.{$dateCol}), ' ', YEAR({$t}.{$dateCol}))",
-                'year' => "YEAR({$t}.{$dateCol})",
-            };
+            $expr = $this->dateGroupExpr($dim, "{$t}.{$dateCol}");
 
             $query->whereRaw("({$expr}) = ?", [(string) $value]);
 
@@ -888,6 +886,29 @@ class AnalyticsController extends Controller
         $spec = $this->groupSpec($metric, $dim, self::METRICS[$metric]['date']);
 
         return $spec[0];
+    }
+
+    private function isPostgres(): bool
+    {
+        return DB::connection()->getDriverName() === 'pgsql';
+    }
+
+    /** Driver-portable temporal GROUP BY expression (month/quarter/year). */
+    private function dateGroupExpr(string $dim, string $col): string
+    {
+        if ($this->isPostgres()) {
+            return match ($dim) {
+                'month' => "to_char($col, 'Mon YYYY')",
+                'quarter' => "CONCAT('Q', EXTRACT(QUARTER FROM $col), ' ', EXTRACT(YEAR FROM $col))",
+                'year' => "to_char($col, 'YYYY')",
+            };
+        }
+
+        return match ($dim) {
+            'month' => "DATE_FORMAT($col, '%b %Y')",
+            'quarter' => "CONCAT('Q', QUARTER($col), ' ', YEAR($col))",
+            'year' => "YEAR($col)",
+        };
     }
 
     /* ------------------------------------------------------------------ */

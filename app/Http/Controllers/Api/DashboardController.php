@@ -19,6 +19,7 @@ use App\Models\Valuation;
 use App\Services\DataIntegrityService;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class DashboardController extends Controller
 {
@@ -110,7 +111,7 @@ class DashboardController extends Controller
                 'properties' => (clone $bills)->distinct()->count('property_id'),
                 'areas' => (clone $bills)->distinct()->count('property_address'),
                 'by_classification' => (clone $bills)
-                    ->selectRaw('COALESCE(property_classification, \'-\') as label, count(*) as total')->groupBy('label')->pluck('total', 'label')->toArray(),
+                    ->selectRaw('COALESCE(property_classification, \'-\') as label, count(*) as total')->groupBy(DB::raw('COALESCE(property_classification, \'-\')'))->pluck('total', 'label')->toArray(),
             ];
         }
 
