@@ -15,6 +15,7 @@ use App\Services\AuditService;
 use App\Services\TaskService;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 
 /**
@@ -464,7 +465,9 @@ class DiscoveryController extends Controller
             ])->values();
 
         $avgDays = (clone $base)->whereNotNull('completed_at')
-            ->selectRaw('avg(timestampdiff(DAY, created_at, completed_at)) as avg')
+            ->selectRaw($this->isPostgres()
+                ? 'avg(EXTRACT(EPOCH FROM (completed_at - created_at)) / 86400) as avg'
+                : 'avg(timestampdiff(DAY, created_at, completed_at)) as avg')
             ->value('avg');
 
         $pendingReview = (int) ($byStatus['SUBMITTED'] ?? 0) + (int) ($byStatus['UNDER_MANAGER_REVIEW'] ?? 0) + (int) ($byStatus['RESUBMITTED'] ?? 0);
@@ -516,6 +519,11 @@ class DiscoveryController extends Controller
     }
 
     /* ---------- helpers ---------- */
+
+    private function isPostgres(): bool
+    {
+        return DB::connection()->getDriverName() === 'pgsql';
+    }
 
     private function rules(): array
     {
