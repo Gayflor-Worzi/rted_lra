@@ -34,8 +34,7 @@ RUN composer install --no-dev --prefer-dist --no-interaction --optimize-autoload
     && chmod -R ug+rwX storage bootstrap/cache
 
 # Serve the React SPA from Laravel's public dir (same origin as /api).
-RUN cp -a /app/dist/. public/ \
-    && mkdir -p public/storage
+COPY --from=frontend /app/dist/ public/
 
 COPY deploy/000-default.conf /etc/apache2/sites-available/000-default.conf
 
