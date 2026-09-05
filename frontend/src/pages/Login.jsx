@@ -82,6 +82,19 @@ export default function Login() {
             {busy ? 'Signing in…' : 'Sign In'}
           </Btn>
           <p className="text-center text-xs text-slate-400 mt-6">Internal use · LRA — RETD</p>
+          <div className="mt-8 rounded-2xl border border-slate-200 bg-white p-4">
+            <div className="flex items-center gap-3">
+              <div className="w-11 h-11 rounded-xl bg-brand-50 grid place-items-center text-xl shrink-0">📲</div>
+              <div className="min-w-0">
+                <div className="text-sm font-bold text-navy-800">Field App</div>
+                <div className="text-[11px] text-slate-500">Android companion for field officers · works offline</div>
+              </div>
+            </div>
+            <a href={BRAND.apkUrl}
+              className="mt-3 flex items-center justify-center gap-2 w-full py-2.5 rounded-xl bg-brand-500 hover:bg-brand-600 text-white text-sm font-semibold transition">
+              ⬇ Download APK
+            </a>
+          </div>
         </form>
       </div>
     </div>

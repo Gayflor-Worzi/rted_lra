@@ -245,6 +245,11 @@ export default function Layout() {
             </div>
           </div>
           <div className="flex items-center gap-3 shrink-0">
+            <a href={BRAND.apkUrl}
+              className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white border border-slate-200 shadow-sm hover:bg-slate-50 text-sm"
+              title="Download the Android field app">
+              📲<span className="hidden md:inline">Field App</span>
+            </a>
             <Link to="/notifications"
               className="relative px-3 py-1.5 rounded-xl bg-white border border-slate-200 shadow-sm hover:bg-slate-50 text-sm">
               🔔<span className="hidden sm:inline"> Notifications</span>

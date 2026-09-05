@@ -5,4 +5,5 @@ export const BRAND = {
   dept: 'Domestic Tax — Real Estate Tax Division',
   tagline: 'Unified task engine · verifiable enforcement of property tax cases.',
   notice: 'Document numbers and property IDs originate from the source tax system. This system logs, tracks and resolves cases around them — it does not generate tax bills.',
+  apkUrl: 'https://github.com/Gayflor-Worzi/rted_lra/releases/latest/download/retd-lra-field.apk',
 }
