@@ -75,6 +75,8 @@ export default function App() {
 
   if (loading) return <div className="min-h-screen grid place-items-center text-slate-400">Loading…</div>
   if (!user) return <Routes><Route path="*" element={<Login />} /></Routes>
+  // Forced password reset takes over the whole app until a new password is set.
+  if (user.must_reset_password) return <Routes><Route path="*" element={<ForceReset />} /></Routes>
 
   return (
     <ErrorBoundary>

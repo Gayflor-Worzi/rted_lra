@@ -19,6 +19,7 @@ export function AuthProvider({ children }) {
     const res = unwrap(await api.post('/auth/login', { email, password }))
     if (res.data?.token) {
       localStorage.setItem(TOKEN_KEY, res.data.token)
+      setUser(res.data.user || null)
       if (res.data.must_reset) {
         return { ok: true, mustReset: true }
       }
