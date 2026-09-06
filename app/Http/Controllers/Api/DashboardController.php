@@ -19,6 +19,8 @@ use App\Models\Valuation;
 use App\Services\DataIntegrityService;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 
 class DashboardController extends Controller
@@ -33,24 +35,24 @@ class DashboardController extends Controller
         $user = $request->user();
         $scope = $user->scopeLevel();
 
-        $tasks = Task::query();
-        $bills = PropertyBill::query();
+        // The Supabase transaction pooler costs ~0.5s per round-trip, so the
+        // payload is built from a handful of snapshot queries and cached briefly
+        // per user — the response stays correct (45s is fine for a dashboard)
+        // while the first paint becomes fast enough for the mobile timeout.
+        return response()->json([
+            'data' => Cache::remember("dash:my:{$user->id}:{$scope}", 45, fn () => $this->buildMy($user, $scope)),
+        ]);
+    }
 
-        if (in_array($scope, ['own', 'team', 'section'], true)) {
-            $user->applyScope($tasks, 'assigned_to');
-        }
-
-        // Bills are scoped to the owner column that matches the user's function
-        // (enforcement staff own assigned bills, everyone else logged bills).
+    private function buildMy(User $user, string $scope): array
+    {
         $isEnforcement = $user->hasAnyPermission(['enforcement.record_visit', 'enforcement.upload_evidence'])
             || ($user->section && $user->section->code === 'ENF');
-        $billsOwner = $isEnforcement ? 'assigned_enforcement_officer_id' : 'account_staff_id';
 
-        if (in_array($scope, ['own', 'team', 'section'], true)) {
-            $user->applyScope($bills, $billsOwner);
-        }
-
-        $active = fn ($q) => $q->whereNotIn('status', Task::COMPLETED_STATUSES);
+        // Minimal per-table snapshots fetched ONCE; every panel figure is
+        // derived in PHP from these rows instead of issuing ~60 COUNT queries.
+        $taskRows = $this->dashboardTaskRows($user, $scope);
+        $billRows = $this->dashboardBillRows($user, $scope, $isEnforcement);
 
         $data = [
             'role' => $user->role?->name,
@@ -68,51 +70,14 @@ class DashboardController extends Controller
             'notifications' => [
                 'unread' => $user->notifications()->unread()->count(),
             ],
-            'tasks' => [
-                'total_active' => (clone $tasks)->whereNotIn('status', Task::COMPLETED_STATUSES)->count(),
-                'overdue' => (clone $tasks)->whereNotIn('status', Task::COMPLETED_STATUSES)
-                    ->whereNotNull('due_date')->whereDate('due_date', '<', now())->count(),
-                'escalated' => (clone $tasks)->where('status', 'Escalated')->count(),
-                'awaiting_assignment' => (clone $tasks)->where('status', 'Awaiting Assignment')->count(),
-                'my_active' => (clone $tasks)->where('assigned_to', $user->id)->whereNotIn('status', Task::COMPLETED_STATUSES)->count(),
-                'completed' => (clone $tasks)->whereIn('status', Task::COMPLETED_STATUSES)->count(),
-                'statuses' => (clone $tasks)
-                    ->selectRaw('status, count(*) as total')->groupBy('status')->pluck('total', 'status')->toArray(),
-            ],
-            'task_overview' => [
-                'assigned' => (clone $tasks)->where('status', 'Assigned')->count(),
-                'in_progress' => (clone $tasks)->whereIn('status', ['Out for Delivery', 'Delivered', 'Payment Follow-up', 'Payment Claimed', 'Verification Pending', 'Payment Verification', '30-Day Warning', '72-Hour Warning', 'Outstanding'])->count(),
-                'due_today' => (clone $tasks)->tap($active)->whereDate('due_date', today())->count(),
-                'due_soon' => (clone $tasks)->tap($active)->whereDate('due_date', '>', today())
-                    ->whereDate('due_date', '<=', today()->addDays(3))->count(),
-                'overdue' => (clone $tasks)->tap($active)->whereNotNull('due_date')->whereDate('due_date', '<', now())->count(),
-                'escalated' => (clone $tasks)->where('status', 'Escalated')->count(),
-                'completed' => (clone $tasks)->whereIn('status', Task::COMPLETED_STATUSES)->count(),
-                'by_type' => (clone $tasks)->tap($active)
-                    ->selectRaw('task_type, count(*) as total')->groupBy('task_type')->pluck('total', 'task_type')->toArray(),
-            ],
-            'bills' => [
-                'total' => (clone $bills)->count(),
-                'outstanding' => (clone $bills)->where('outstanding_balance', '>', 0)->count(),
-                'paid' => (clone $bills)->where('payment_status', 'Paid')->count(),
-                'awaiting_assignment' => (clone $bills)->where('case_status', 'Awaiting Assignment')->count(),
-            ],
+            'tasks' => $this->dashboardTaskCounts($user, $taskRows),
+            'task_overview' => $this->dashboardTaskOverview($user, $taskRows),
+            'bills' => $this->dashboardBillCounts($billRows),
         ];
 
         // Financial snapshot — only for users authorised to view bills.
         if ($isEnforcement || $user->hasAnyPermission(['bills.view', 'records.view', 'bills.create', 'reports.view'])) {
-            $data['bills_area'] = [
-                'total_bills' => (clone $bills)->count(),
-                'total_tax_due' => round((float) (clone $bills)->sum('total_tax_due'), 2),
-                'outstanding' => round((float) (clone $bills)->sum('outstanding_balance'), 2),
-                'amount_paid' => round((float) Payment::whereIn('bill_id', (clone $bills)->select('id'))->sum('amount'), 2),
-                'amount_verified' => round((float) PaymentVerification::whereIn('bill_id', (clone $bills)->select('id'))
-                    ->whereIn('verification_status', ['Verified', 'Confirmed'])->sum('amount_claimed'), 2),
-                'properties' => (clone $bills)->distinct()->count('property_id'),
-                'areas' => (clone $bills)->distinct()->count('property_address'),
-                'by_classification' => (clone $bills)
-                    ->selectRaw('COALESCE(property_classification, \'-\') as label, count(*) as total')->groupBy(DB::raw('COALESCE(property_classification, \'-\')'))->pluck('total', 'label')->toArray(),
-            ];
+            $data['bills_area'] = $this->dashboardBillArea($billRows);
         }
 
         // Section-level panels
@@ -140,16 +105,16 @@ class DashboardController extends Controller
         ];
 
         // Target-based performance summary + supporting indicators.
-        $data['performance'] = $this->performanceSummary($user);
+        $data['performance'] = $this->performanceSummary($user, $taskRows, $billRows);
 
         // Things needing the user's attention right now.
-        $data['priority_actions'] = $this->priorityActions($user, $tasks);
+        $data['priority_actions'] = $this->priorityActions($user, $taskRows);
 
         // Most recent field engagement (enforcement staff).
-        $data['current_engagement'] = $this->currentEngagement($user);
+        $data['current_engagement'] = $this->currentEngagement($user, $taskRows);
 
         // Compact recent-activity feed from the user's own operations.
-        $data['recent_activity'] = $this->recentActivity($user);
+        $data['recent_activity'] = $this->recentActivity($user, $taskRows);
 
         // Authorised quick actions for the role.
         $data['quick_actions'] = $this->quickActions($user);
@@ -157,11 +122,97 @@ class DashboardController extends Controller
         // Permission-filtered chart metrics for the Home charts.
         $data['chart_metrics'] = $this->chartMetrics($user);
 
-        return response()->json(['data' => $data]);
+        return $data;
+    }
+
+    /** Optional query-slashing helpers used by my(). */
+
+    private function dashboardTaskRows(User $user, string $scope): Collection
+    {
+        $tasks = Task::query();
+
+        if (in_array($scope, ['own', 'team', 'section'], true)) {
+            $user->applyScope($tasks, 'assigned_to');
+        }
+
+        return $tasks->get(['id', 'status', 'task_type', 'task_reference', 'due_date', 'assigned_to', 'completed_at', 'updated_at']);
+    }
+
+    private function dashboardTaskCounts(User $user, Collection $rows): array
+    {
+        $today = now()->toDateString();
+
+        return [
+            'total_active' => $rows->reject(fn ($t) => in_array($t->status, Task::COMPLETED_STATUSES, true))->count(),
+            'overdue' => $rows->whereNotIn('status', Task::COMPLETED_STATUSES)
+                ->filter(fn ($t) => $t->due_date && $t->due_date->toDateString() < $today)->count(),
+            'escalated' => $rows->where('status', 'Escalated')->count(),
+            'awaiting_assignment' => $rows->where('status', 'Awaiting Assignment')->count(),
+            'my_active' => $rows->where('assigned_to', $user->id)
+                ->reject(fn ($t) => in_array($t->status, Task::COMPLETED_STATUSES, true))->count(),
+            'completed' => $rows->whereIn('status', Task::COMPLETED_STATUSES)->count(),
+            'statuses' => $rows->countBy('status')->sortKeys()->toArray(),
+        ];
+    }
+
+    private function dashboardTaskOverview(User $user, Collection $rows): array
+    {
+        $active = fn ($r) => $r->reject(fn ($t) => in_array($t->status, Task::COMPLETED_STATUSES, true));
+        $today = now()->toDateString();
+        $soon = now()->addDays(3)->toDateString();
+        $inProgress = ['Out for Delivery', 'Delivered', 'Payment Follow-up', 'Payment Claimed', 'Verification Pending', 'Payment Verification', '30-Day Warning', '72-Hour Warning', 'Outstanding'];
+
+        return [
+            'assigned' => $rows->where('status', 'Assigned')->count(),
+            'in_progress' => $rows->whereIn('status', $inProgress)->count(),
+            'due_today' => $active($rows)->filter(fn ($t) => $t->due_date && $t->due_date->toDateString() === $today)->count(),
+            'due_soon' => $active($rows)->filter(fn ($t) => $t->due_date && $t->due_date->toDateString() > $today && $t->due_date->toDateString() <= $soon)->count(),
+            'overdue' => $rows->whereNotIn('status', Task::COMPLETED_STATUSES)
+                ->filter(fn ($t) => $t->due_date && $t->due_date->toDateString() < $today)->count(),
+            'escalated' => $rows->where('status', 'Escalated')->count(),
+            'completed' => $rows->whereIn('status', Task::COMPLETED_STATUSES)->count(),
+            'by_type' => $active($rows)->countBy('task_type')->sortKeys()->toArray(),
+        ];
+    }
+
+    private function dashboardBillRows(User $user, string $scope, bool $isEnforcement): Collection
+    {
+        $bills = PropertyBill::query();
+
+        if (in_array($scope, ['own', 'team', 'section'], true)) {
+            $user->applyScope($bills, $isEnforcement ? 'assigned_enforcement_officer_id' : 'account_staff_id');
+        }
+
+        return $bills->get(['id', 'outstanding_balance', 'payment_status', 'case_status', 'total_tax_due', 'property_id', 'property_address', 'property_classification', 'account_staff_id', 'date_logged']);
+    }
+
+    private function dashboardBillCounts(Collection $rows): array
+    {
+        return [
+            'total' => $rows->count(),
+            'outstanding' => $rows->filter(fn ($b) => (float) $b->outstanding_balance > 0)->count(),
+            'paid' => $rows->where('payment_status', 'Paid')->count(),
+            'awaiting_assignment' => $rows->where('case_status', 'Awaiting Assignment')->count(),
+        ];
+    }
+
+    private function dashboardBillArea(Collection $rows): array
+    {
+        return [
+            'total_bills' => $rows->count(),
+            'total_tax_due' => round((float) $rows->sum(fn ($b) => (float) $b->total_tax_due), 2),
+            'outstanding' => round((float) $rows->sum(fn ($b) => (float) $b->outstanding_balance), 2),
+            'amount_paid' => round((float) Payment::whereIn('bill_id', $rows->pluck('id')->all())->sum('amount'), 2),
+            'amount_verified' => round((float) PaymentVerification::whereIn('bill_id', $rows->pluck('id')->all())
+                ->whereIn('verification_status', ['Verified', 'Confirmed'])->sum('amount_claimed'), 2),
+            'properties' => $rows->pluck('property_id')->filter(fn ($v) => $v !== null)->unique()->count(),
+            'areas' => $rows->pluck('property_address')->filter(fn ($v) => $v !== null)->unique()->count(),
+            'by_classification' => $rows->groupBy(fn ($b) => ($b->property_classification ?: '-'))->map->count()->sortKeys()->toArray(),
+        ];
     }
 
     /** Target + live-achieved performance summary for the user. */
-    private function performanceSummary(User $user): array
+    private function performanceSummary(User $user, Collection $taskRows, Collection $billRows): array
     {
         $target = StaffTarget::where('user_id', $user->id)->where('status', 'Approved')
             ->orderByDesc('start_date')->orderByDesc('id')->get()
@@ -174,7 +225,7 @@ class DashboardController extends Controller
         $summary = [
             'has_target' => (bool) $target,
             'window' => ['start' => $start->toDateString(), 'end' => $end->toDateString()],
-            'indicators' => $this->performanceIndicators($user, $start, $end),
+            'indicators' => $this->performanceIndicators($user, $start, $end, $taskRows, $billRows),
         ];
 
         if ($target) {
@@ -193,42 +244,46 @@ class DashboardController extends Controller
     }
 
     /** Role-relevant achievement indicators within the given window. */
-    private function performanceIndicators(User $user, $start, $end): array
+    private function performanceIndicators(User $user, $start, $end, Collection $taskRows, Collection $billRows): array
     {
         $out = [
             'completed_tasks' => [
-                'value' => Task::where('assigned_to', $user->id)->whereIn('status', Task::COMPLETED_STATUSES)
-                    ->whereBetween('completed_at', [$start, $end])->count(),
+                'value' => $taskRows->where('assigned_to', $user->id)->whereIn('status', Task::COMPLETED_STATUSES)
+                    ->filter(fn ($t) => $t->completed_at && $t->completed_at->between($start, $end))->count(),
                 'label' => 'Tasks Completed',
             ],
         ];
 
         if ($user->hasAnyPermission(['enforcement.record_visit', 'enforcement.view_assignments'])) {
+            $visits = EnforcementVisit::where('officer_id', $user->id)->whereBetween('visit_date', [$start, $end])
+                ->get(['delivery_status']);
+
             $out['bills_delivered'] = [
-                'value' => EnforcementVisit::where('officer_id', $user->id)->where('delivery_status', EnforcementVisit::DELIVERY_DELIVERED)
-                    ->whereBetween('visit_date', [$start, $end])->count(),
+                'value' => $visits->where('delivery_status', EnforcementVisit::DELIVERY_DELIVERED)->count(),
                 'label' => 'Bills Delivered',
             ];
             $out['visits'] = [
-                'value' => EnforcementVisit::where('officer_id', $user->id)->whereBetween('visit_date', [$start, $end])->count(),
+                'value' => $visits->count(),
                 'label' => 'Properties Visited',
             ];
             $out['payment_followups'] = [
-                'value' => Task::where('assigned_to', $user->id)->where('task_type', 'Payment Follow-up')
-                    ->whereNotIn('status', Task::COMPLETED_STATUSES)->count(),
+                'value' => $taskRows->where('assigned_to', $user->id)->where('task_type', 'Payment Follow-up')
+                    ->reject(fn ($t) => in_array($t->status, Task::COMPLETED_STATUSES, true))->count(),
                 'label' => 'Payment Follow-ups',
             ];
         }
 
         if ($user->hasAnyPermission(['payments.view_queue', 'payments.verify', 'payments.view_history'])) {
+            $verified = PaymentVerification::where('verified_by', $user->id)
+                ->whereIn('verification_status', ['Verified', 'Confirmed'])->whereBetween('created_at', [$start, $end])
+                ->get(['amount_claimed']);
+
             $out['payments_verified'] = [
-                'value' => PaymentVerification::where('verified_by', $user->id)
-                    ->whereIn('verification_status', ['Verified', 'Confirmed'])->whereBetween('created_at', [$start, $end])->count(),
+                'value' => $verified->count(),
                 'label' => 'Payments Verified',
             ];
             $out['collections_amount'] = [
-                'value' => (float) round(PaymentVerification::where('verified_by', $user->id)
-                    ->whereIn('verification_status', ['Verified', 'Confirmed'])->whereBetween('created_at', [$start, $end])->sum('amount_claimed'), 2),
+                'value' => round((float) $verified->sum('amount_claimed'), 2),
                 'label' => 'Amount Verified',
             ];
         }
@@ -250,7 +305,8 @@ class DashboardController extends Controller
 
         if ($user->canPermission('bills.create')) {
             $out['bills_logged'] = [
-                'value' => PropertyBill::where('account_staff_id', $user->id)->whereBetween('date_logged', [$start, $end])->count(),
+                'value' => $billRows->where('account_staff_id', $user->id)
+                    ->filter(fn ($b) => $b->date_logged && $b->date_logged->between($start, $end))->count(),
                 'label' => 'Bills Logged',
             ];
         }
@@ -299,26 +355,26 @@ class DashboardController extends Controller
      * Priority items surfaced on the Home page. Each carries the action label,
      * urgency colour hint and the mobile route to take when tapped.
      */
-    private function priorityActions(User $user, Builder $tasks): array
+    private function priorityActions(User $user, Collection $rows): array
     {
-        $scope = $user->scopeLevel();
-        $active = fn ($q) => $q->whereNotIn('status', Task::COMPLETED_STATUSES);
+        $today = now()->toDateString();
+        $active = fn ($r) => $r->reject(fn ($t) => in_array($t->status, Task::COMPLETED_STATUSES, true));
+        $overdue = $active($rows)->filter(fn ($t) => $t->due_date && $t->due_date->toDateString() < $today)->count();
+        $dueToday = $active($rows)->filter(fn ($t) => $t->due_date && $t->due_date->toDateString() === $today)->count();
+        $escalated = $rows->where('status', 'Escalated')->count();
 
         $out = [];
 
-        $overdue = (clone $tasks)->tap($active)->whereNotNull('due_date')->whereDate('due_date', '<', now())->count();
         if ($overdue > 0) {
             $out[] = ['key' => 'overdue', 'label' => 'Overdue', 'urgency' => 'overdue', 'count' => $overdue,
                 'detail' => "{$overdue} task(s) require follow-up.", 'action' => 'View', 'route' => 'Tasks', 'params' => null];
         }
 
-        $dueToday = (clone $tasks)->tap($active)->whereDate('due_date', today())->count();
         if ($dueToday > 0) {
             $out[] = ['key' => 'due_today', 'label' => 'Due Today', 'urgency' => 'today', 'count' => $dueToday,
                 'detail' => "{$dueToday} delivery/follow-up task(s) are due today.", 'action' => 'Continue', 'route' => 'Tasks', 'params' => null];
         }
 
-        $escalated = (clone $tasks)->where('status', 'Escalated')->count();
         if ($escalated > 0) {
             $out[] = ['key' => 'escalated', 'label' => 'Escalated', 'urgency' => 'escalated', 'count' => $escalated,
                 'detail' => "{$escalated} case(s) require enforcement action.", 'action' => 'Take Action', 'route' => 'Tasks', 'params' => null];
@@ -353,7 +409,7 @@ class DashboardController extends Controller
         }
 
         if ($user->hasAnyPermission(['bills.create', 'records.view'])) {
-            $pending = (clone $tasks)->where('status', 'Awaiting Assignment')->count();
+            $pending = $rows->where('status', 'Awaiting Assignment')->count();
             if ($pending > 0) {
                 $out[] = ['key' => 'awaiting_assignment', 'label' => 'Awaiting Assignment', 'urgency' => 'action', 'count' => $pending,
                     'detail' => "{$pending} bill(s) awaiting assignment.", 'action' => 'View', 'route' => 'Tasks', 'params' => null];
@@ -364,19 +420,21 @@ class DashboardController extends Controller
     }
 
     /** Most recent active field engagement for the officer's current task. */
-    private function currentEngagement(User $user): ?array
+    private function currentEngagement(User $user, Collection $rows): ?array
     {
         if (! $user->hasAnyPermission(['tasks.view_own', 'tasks.view_section', 'enforcement.record_visit', 'enforcement.view_assignments'])) {
             return null;
         }
 
-        $task = Task::where('assigned_to', $user->id)->whereNotIn('status', Task::COMPLETED_STATUSES)
-            ->orderByDesc('updated_at')->with('bill')->first();
+        $task = $rows->where('assigned_to', $user->id)
+            ->reject(fn ($t) => in_array($t->status, Task::COMPLETED_STATUSES, true))
+            ->sortByDesc(fn ($t) => $t->updated_at ? $t->updated_at->timestamp : 0)->first();
 
         if (! $task) {
             return null;
         }
 
+        $task->loadMissing('bill');
         $lastAction = $task->history()->orderByDesc('id')->first();
         $performer = $lastAction?->performed_by ? User::find($lastAction->performed_by)?->full_name : null;
         $visit = EnforcementVisit::where('task_id', $task->id)->orderByDesc('visit_date')->first();
@@ -410,15 +468,21 @@ class DashboardController extends Controller
     }
 
     /** Recent activity generated from the user's own operations, newest first. */
-    private function recentActivity(User $user): array
+    private function recentActivity(User $user, Collection $rows): array
     {
         $items = [];
 
-        $taskIds = Task::where('assigned_to', $user->id)->pluck('id');
-        if ($taskIds->isNotEmpty()) {
+        $taskIds = $rows->where('assigned_to', $user->id)->pluck('id')->values()->all();
+
+        if (! empty($taskIds)) {
             $history = TaskHistory::whereIn('task_id', $taskIds)->orderByDesc('id')->limit(8)->get();
-            $refs = Task::whereIn('id', $history->pluck('task_id')->unique())->pluck('task_reference', 'id');
-            $actors = User::whereIn('id', $history->pluck('performed_by')->filter()->unique())->pluck('full_name', 'id');
+            $refs = $rows->whereIn('id', $history->pluck('task_id')->unique()->values()->all())->pluck('task_reference', 'id')->all();
+
+            $performerIds = $history->pluck('performed_by')->filter()->unique()->values()->all();
+            $actors = collect($performerIds)->isNotEmpty()
+                ? User::whereIn('id', $performerIds)->pluck('full_name', 'id')
+                : collect();
+
             foreach ($history as $h) {
                 $items[] = [
                     'type' => 'task', 'label' => $h->action ?: 'Task updated',

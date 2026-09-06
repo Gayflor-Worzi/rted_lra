@@ -2,7 +2,7 @@ import axios from 'axios'
 
 export const TOKEN_KEY = 'retd_token'
 
-const api = axios.create({ baseURL: import.meta.env.VITE_API_BASE || '/api/v1', headers: { Accept: 'application/json' }, timeout: 45000 })
+const api = axios.create({ baseURL: import.meta.env.VITE_API_BASE || '/api/v1', headers: { Accept: 'application/json' }, timeout: 60000 })
 
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem(TOKEN_KEY)
@@ -20,7 +20,7 @@ const canRetry = (config, err) => {
   if ((config.retryCount ?? 0) >= (config.retries ?? 2)) return false
   const status = err?.response?.status
   if (status) return RETRYABLE.includes(status)
-  return !err?.code // network errors (no status, no abort code) are retryable
+  return !err?.code || err?.code === 'ECONNABORTED' // network errors + timeouts retryable
 }
 
 api.interceptors.response.use(

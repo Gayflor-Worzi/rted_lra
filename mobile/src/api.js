@@ -4,7 +4,7 @@ import { API_BASE } from './config'
 let tokenGetter = () => null
 let onUnauthorized = () => {}
 
-const api = axios.create({ baseURL: `${API_BASE}/api/v1`, timeout: 25000 })
+const api = axios.create({ baseURL: `${API_BASE}/api/v1`, timeout: 60000 })
 
 api.interceptors.request.use((cfg) => {
   const t = tokenGetter()
@@ -23,7 +23,7 @@ const canRetry = (config, err) => {
   if ((config.retryCount ?? 0) >= (config.retries ?? 2)) return false
   const status = err?.response?.status
   if (status) return RETRYABLE.includes(status)
-  return !err?.code
+  return !err?.code || err?.code === 'ECONNABORTED'
 }
 
 api.interceptors.response.use(

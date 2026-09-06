@@ -2,7 +2,7 @@
   "expo": {
     "name": "RETD_LRA Field",
     "slug": "retd-lra-field",
-    "version": "1.0.2",
+    "version": "1.0.3",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "icon": "./assets/icon.png",
