@@ -1,28 +1,31 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import api, { errMsg } from '../api'
 import { useAuth } from '../auth'
-import { errMsg } from '../api'
 import { BRAND } from '../lib/brand'
 import { Input, Btn, SuccessBox } from '../ui'
 
 export default function Login() {
-  const { login } = useAuth()
+  const { login, refreshMe, logout } = useAuth()
   const nav = useNavigate()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [resetMode, setResetMode] = useState(false)
   const [err, setErr] = useState('')
   const [info, setInfo] = useState('')
   const [busy, setBusy] = useState(false)
 
-  const submit = async (e) => {
-    e.preventDefault()
+  const doLogin = async () => {
     setErr(''); setInfo(''); setBusy(true)
     try {
       const r = await login(email, password)
-      if (r.mustReset) {
+      if (r.ok && r.mustReset) {
         setEmail(''); setPassword('')
+        setErr('')
         setInfo('First sign-in: create a new password to continue.')
-        nav('/force-reset')
+        setResetMode(true)
       } else if (r.ok) {
         nav('/dashboard')
       } else {
@@ -32,6 +35,36 @@ export default function Login() {
       setErr(errMsg(ex, 'Invalid credentials.'))
     }
     setBusy(false)
+  }
+
+  const doReset = async () => {
+    setErr('')
+    if (newPassword.length < 8) { setErr('Password must be at least 8 characters.'); return }
+    if (newPassword !== confirmPassword) { setErr('Passwords do not match.'); return }
+    setBusy(true)
+    try {
+      await api.post('/auth/reset-password', { password: newPassword, password_confirmation: confirmPassword })
+      await refreshMe()
+      setInfo('')
+      nav('/dashboard')
+    } catch (ex) {
+      setErr(errMsg(ex, 'Unable to update password.'))
+    }
+    setBusy(false)
+  }
+
+  const backToLogin = async () => {
+    await logout()
+    setResetMode(false)
+    setPassword('')
+    setNewPassword(''); setConfirmPassword('')
+    setErr(''); setInfo('')
+  }
+
+  const submit = (e) => {
+    e.preventDefault()
+    if (resetMode) doReset()
+    else doLogin()
   }
 
   return (
@@ -62,7 +95,7 @@ export default function Login() {
         </div>
       </div>
 
-      {/* Login form */}
+      {/* Form */}
       <div className="flex items-center justify-center p-8 bg-slate-50">
         <form onSubmit={submit} className="w-full max-w-sm">
           <div className="lg:hidden flex justify-center mb-6">
@@ -70,31 +103,52 @@ export default function Login() {
               <img src="/assets/lra-logo.png" alt="LRA" className="max-w-full object-contain" />
             </div>
           </div>
-          <h2 className="text-2xl font-bold text-navy-800">Sign in</h2>
-          <p className="text-sm text-slate-500 mb-6">RETD internal task & case console</p>
-          {info && <div className="mb-4"><SuccessBox>{info}</SuccessBox></div>}
-          {err && <div className="mb-4 rounded-xl bg-red-50 text-red-700 border border-red-100 px-4 py-3 text-sm">⚠️ {err}</div>}
-          <label className="block text-xs font-semibold text-slate-600 mb-1.5">Email</label>
-          <Input className="w-full mb-4" value={email} onChange={(e) => setEmail(e.target.value)} type="email" autoComplete="username" required placeholder="you@lra.gov.lr" />
-          <label className="block text-xs font-semibold text-slate-600 mb-1.5">Password</label>
-          <Input className="w-full mb-6" value={password} onChange={(e) => setPassword(e.target.value)} type="password" autoComplete="current-password" required placeholder="••••••••" />
-          <Btn type="submit" disabled={busy} className="w-full py-3 shadow-lg shadow-brand-500/20">
-            {busy ? 'Signing in…' : 'Sign In'}
-          </Btn>
-          <p className="text-center text-xs text-slate-400 mt-6">Internal use · LRA — RETD</p>
-          <div className="mt-8 rounded-2xl border border-slate-200 bg-white p-4">
-            <div className="flex items-center gap-3">
-              <div className="w-11 h-11 rounded-xl bg-brand-50 grid place-items-center text-xl shrink-0">📲</div>
-              <div className="min-w-0">
-                <div className="text-sm font-bold text-navy-800">Field App</div>
-                <div className="text-[11px] text-slate-500">Android companion for field officers · works offline</div>
+          {resetMode ? (
+            <>
+              <h2 className="text-2xl font-bold text-navy-800">Create a new password</h2>
+              <p className="text-sm text-slate-500 mb-6">First sign-in requires a password change before you can continue.</p>
+              {info && <div className="mb-4"><SuccessBox>{info}</SuccessBox></div>}
+              {err && <div className="mb-4 rounded-xl bg-red-50 text-red-700 border border-red-100 px-4 py-3 text-sm">⚠️ {err}</div>}
+              <label className="block text-xs font-semibold text-slate-600 mb-1.5">New password</label>
+              <Input className="w-full mb-4" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} type="password" autoComplete="new-password" required minLength={8} placeholder="At least 8 characters" />
+              <label className="block text-xs font-semibold text-slate-600 mb-1.5">Confirm password</label>
+              <Input className="w-full mb-6" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} type="password" autoComplete="new-password" required minLength={8} placeholder="Repeat the new password" />
+              <Btn type="submit" disabled={busy} className="w-full py-3 shadow-lg shadow-brand-500/20">
+                {busy ? 'Updating…' : 'Set Password'}
+              </Btn>
+              <button type="button" onClick={backToLogin} className="w-full text-center text-xs text-slate-400 mt-4 hover:text-slate-600 transition">
+                ← Use a different account
+              </button>
+            </>
+          ) : (
+            <>
+              <h2 className="text-2xl font-bold text-navy-800">Sign in</h2>
+              <p className="text-sm text-slate-500 mb-6">RETD internal task & case console</p>
+              {info && <div className="mb-4"><SuccessBox>{info}</SuccessBox></div>}
+              {err && <div className="mb-4 rounded-xl bg-red-50 text-red-700 border border-red-100 px-4 py-3 text-sm">⚠️ {err}</div>}
+              <label className="block text-xs font-semibold text-slate-600 mb-1.5">Email</label>
+              <Input className="w-full mb-4" value={email} onChange={(e) => setEmail(e.target.value)} type="email" autoComplete="username" required placeholder="you@lra.gov.lr" />
+              <label className="block text-xs font-semibold text-slate-600 mb-1.5">Password</label>
+              <Input className="w-full mb-6" value={password} onChange={(e) => setPassword(e.target.value)} type="password" autoComplete="current-password" required placeholder="••••••••" />
+              <Btn type="submit" disabled={busy} className="w-full py-3 shadow-lg shadow-brand-500/20">
+                {busy ? 'Signing in…' : 'Sign In'}
+              </Btn>
+              <p className="text-center text-xs text-slate-400 mt-6">Internal use · LRA — RETD</p>
+              <div className="mt-8 rounded-2xl border border-slate-200 bg-white p-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-11 h-11 rounded-xl bg-brand-50 grid place-items-center text-xl shrink-0">📲</div>
+                  <div className="min-w-0">
+                    <div className="text-sm font-bold text-navy-800">Field App</div>
+                    <div className="text-[11px] text-slate-500">Android companion for field officers · works offline</div>
+                  </div>
+                </div>
+                <a href={BRAND.apkUrl}
+                  className="mt-3 flex items-center justify-center gap-2 w-full py-2.5 rounded-xl bg-brand-500 hover:bg-brand-600 text-white text-sm font-semibold transition">
+                  ⬇ Download APK
+                </a>
               </div>
-            </div>
-            <a href={BRAND.apkUrl}
-              className="mt-3 flex items-center justify-center gap-2 w-full py-2.5 rounded-xl bg-brand-500 hover:bg-brand-600 text-white text-sm font-semibold transition">
-              ⬇ Download APK
-            </a>
-          </div>
+            </>
+          )}
         </form>
       </div>
     </div>

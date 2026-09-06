@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useAuth } from './auth'
 import ErrorBoundary from './components/ErrorBoundary'
+import IdleGuard from './components/IdleGuard'
 import Layout from './components/Layout'
 import Login from './pages/Login'
 import ForceReset from './pages/ForceReset'
@@ -76,10 +77,15 @@ export default function App() {
   if (loading) return <div className="min-h-screen grid place-items-center text-slate-400">Loading…</div>
   if (!user) return <Routes><Route path="*" element={<Login />} /></Routes>
   // Forced password reset takes over the whole app until a new password is set.
-  if (user.must_reset_password) return <Routes><Route path="*" element={<ForceReset />} /></Routes>
+  if (user.must_reset_password) return (
+    <IdleGuard>
+      <Routes><Route path="*" element={<ForceReset />} /></Routes>
+    </IdleGuard>
+  )
 
   return (
-    <ErrorBoundary>
+    <IdleGuard>
+      <ErrorBoundary>
       <Routes>
         <Route element={<Layout />}>
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
@@ -103,5 +109,6 @@ export default function App() {
         </Route>
       </Routes>
     </ErrorBoundary>
+    </IdleGuard>
   )
 }

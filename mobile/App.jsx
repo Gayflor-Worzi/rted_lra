@@ -9,6 +9,7 @@ import { AuthProvider, useAuth } from './src/auth'
 import { SyncProvider } from './src/sync'
 import { theme } from './src/theme'
 import { hasAny } from './src/rbac'
+import IdleGate from './src/components/IdleGate'
 import LoginScreen from './src/screens/LoginScreen'
 import ResetPasswordScreen from './src/screens/ResetPasswordScreen'
 import TasksScreen from './src/screens/TasksScreen'
@@ -93,6 +94,7 @@ function TabNav() {
 
 function RootNav() {
   const { token, user } = useAuth()
+  const authenticated = !!token && !!user
 
   const detailHeader = (title) => ({
     title,
@@ -103,9 +105,9 @@ function RootNav() {
     headerBackButtonDisplayMode: 'minimal',
   })
 
-  return (
+  const nav = (
     <Stack.Navigator>
-      {!token || !user ? (
+      {!authenticated ? (
         <>
           <Stack.Screen name="Login" component={LoginScreen} options={{ headerShown: false }} />
         </>
@@ -125,6 +127,8 @@ function RootNav() {
       )}
     </Stack.Navigator>
   )
+
+  return authenticated ? <IdleGate>{nav}</IdleGate> : nav
 }
 
 export default function App() {
