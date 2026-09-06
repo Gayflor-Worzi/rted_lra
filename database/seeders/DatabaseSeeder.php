@@ -3,10 +3,8 @@
 namespace Database\Seeders;
 
 use App\Models\Permission;
-use App\Models\PropertyBill;
 use App\Models\Role;
 use App\Models\Section;
-use App\Models\Task;
 use App\Models\User;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\Hash;
@@ -25,7 +23,6 @@ class DatabaseSeeder extends Seeder
         $this->seedRoleExtras();
 
         $this->seedUsers();
-        $this->seedDemoBills();
     }
 
     private function seedRoleExtras(): void
@@ -257,17 +254,11 @@ class DatabaseSeeder extends Seeder
 
         $accounts = [
             ['name' => 'System Administrator', 'role' => 'System Administrator', 'section' => 'SYS', 'email' => 'wooze27@gmail.com', 'password' => $adminPassword],
-            ['name' => 'Assistant Commissioner (RETD)', 'role' => 'Assistant Commissioner', 'section' => 'MGT', 'email' => 'assistant.commissioner@test.lra', 'password' => 'ac123'],
-            ['name' => 'Account Manager', 'role' => 'Account Manager', 'section' => 'ACCT', 'email' => 'account.manager@test.lra', 'password' => 'manager123'],
-            ['name' => 'Account Supervisor', 'role' => 'Account Supervisor', 'section' => 'ACCT', 'email' => 'account.supervisor@test.lra', 'password' => 'account123'],
             ['name' => 'Account Officer', 'role' => 'Account & Records Officer', 'section' => 'ACCT', 'email' => 'account.officer@test.lra', 'password' => 'account123'],
-            ['name' => 'Enforcement Manager', 'role' => 'Enforcement Manager', 'section' => 'ENF', 'email' => 'enf.manager@test.lra', 'password' => 'manager123'],
             ['name' => 'Enforcement Supervisor', 'role' => 'Enforcement Supervisor', 'section' => 'ENF', 'email' => 'enf.supervisor@test.lra', 'password' => 'officer123'],
             ['name' => 'Enforcement Officer', 'role' => 'Enforcement Officer', 'section' => 'ENF', 'email' => 'enf.officer@test.lra', 'password' => 'officer123'],
             ['name' => 'M&E Officer', 'role' => 'M&E Officer', 'section' => 'ENF', 'email' => 'me.officer@test.lra', 'password' => 'officer123'],
-            ['name' => 'Valuation Manager', 'role' => 'Valuation Manager', 'section' => 'VAL', 'email' => 'val.manager@test.lra', 'password' => 'manager123'],
             ['name' => 'Valuation Supervisor', 'role' => 'Valuation Supervisor', 'section' => 'VAL', 'email' => 'val.supervisor@test.lra', 'password' => 'officer123'],
-            ['name' => 'Valuation Officer', 'role' => 'Valuation Officer', 'section' => 'VAL', 'email' => 'val.officer@test.lra', 'password' => 'officer123'],
         ];
 
         // Only purge non-canonical users in non-production environments to avoid
@@ -296,90 +287,7 @@ class DatabaseSeeder extends Seeder
         // Team wiring for supervisors (supervisor_id drives the `team` data scope).
         $byEmail = fn (string $email) => User::where('email', $email)->value('id');
 
-        User::where('email', 'account.officer@test.lra')->update(['supervisor_id' => $byEmail('account.supervisor@test.lra')]);
-        User::where('email', 'account.supervisor@test.lra')->update(['supervisor_id' => $byEmail('account.manager@test.lra')]);
         User::where('email', 'enf.officer@test.lra')->update(['supervisor_id' => $byEmail('enf.supervisor@test.lra')]);
         User::where('email', 'me.officer@test.lra')->update(['supervisor_id' => $byEmail('enf.supervisor@test.lra')]);
-        User::where('email', 'enf.supervisor@test.lra')->update(['supervisor_id' => $byEmail('enf.manager@test.lra')]);
-        User::where('email', 'val.officer@test.lra')->update(['supervisor_id' => $byEmail('val.supervisor@test.lra')]);
-        User::where('email', 'val.supervisor@test.lra')->update(['supervisor_id' => $byEmail('val.manager@test.lra')]);
-    }
-
-    private function seedDemoBills(): void
-    {
-        $officerId = User::where('email', 'enf.officer@test.lra')->value('id');
-        $accountId = User::where('email', 'account.officer@test.lra')->value('id');
-
-        // Directly assigned to the Enforcement Officer
-        $bill1 = PropertyBill::firstOrCreate(['document_number' => '2026/45872'], [
-            'property_id' => '103458',
-            'taxpayer_name' => 'John Doe',
-            'tin' => '1234567890',
-            'property_classification' => 'Residential',
-            'property_address' => '12 Broad Street, Monrovia',
-            'assessed_value' => 9000000,
-            'tax_amount' => 180000,
-            'interest_charged' => 0,
-            'penalty_charged' => 0,
-            'total_tax_due' => 180000,
-            'outstanding_balance' => 180000,
-            'tax_period' => '2026',
-            'recipient_type' => PropertyBill::RECIPIENT_DIRECT,
-            'recipient_name' => 'John Doe',
-            'date_logged' => now()->subDays(7)->toDateString(),
-            'delivery_status' => 'Out for Delivery',
-            'payment_status' => 'Unpaid',
-            'case_status' => 'Assigned',
-            'account_staff_id' => $accountId,
-            'assigned_enforcement_officer_id' => $officerId,
-        ]);
-
-        Task::firstOrCreate(['task_reference' => 'TASK-'.date('Y').'-00001'], [
-            'task_type' => 'Bill Delivery',
-            'section' => 'Enforcement',
-            'reference_type' => 'property_bill',
-            'reference_id' => $bill1->id,
-            'assigned_to' => $officerId,
-            'assigned_by' => $accountId,
-            'priority' => 'High',
-            'status' => 'Assigned',
-            'due_date' => now()->addDays(7)->toDateString(),
-            'remarks' => 'Deliver bill and follow up payment.',
-        ]);
-
-        // Walk-in taxpayer, awaiting assignment (unassigned officer)
-        $bill2 = PropertyBill::firstOrCreate(['document_number' => '2026/45890'], [
-            'property_id' => '103499',
-            'taxpayer_name' => 'Korto Davis',
-            'tin' => '0987654321',
-            'property_classification' => 'Commercial',
-            'property_address' => '45 Randall Street, Monrovia',
-            'assessed_value' => 15000000,
-            'tax_amount' => 300000,
-            'interest_charged' => 0,
-            'penalty_charged' => 0,
-            'total_tax_due' => 300000,
-            'outstanding_balance' => 300000,
-            'tax_period' => '2026',
-            'recipient_type' => PropertyBill::RECIPIENT_WALK_IN,
-            'recipient_name' => 'Korto Davis',
-            'date_logged' => now()->subDays(2)->toDateString(),
-            'delivery_status' => 'Logged',
-            'payment_status' => 'Unpaid',
-            'case_status' => 'Awaiting Assignment',
-            'account_staff_id' => $accountId,
-        ]);
-
-        Task::firstOrCreate(['task_reference' => 'TASK-'.date('Y').'-00002'], [
-            'task_type' => 'Bill Delivery',
-            'section' => 'Enforcement',
-            'reference_type' => 'property_bill',
-            'reference_id' => $bill2->id,
-            'assigned_by' => $accountId,
-            'priority' => 'Normal',
-            'status' => 'Awaiting Assignment',
-            'due_date' => now()->addDays(14)->toDateString(),
-            'remarks' => 'Walk-in taxpayer. Awaiting enforcement assignment.',
-        ]);
     }
 }

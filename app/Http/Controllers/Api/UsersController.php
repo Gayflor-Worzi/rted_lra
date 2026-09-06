@@ -118,6 +118,8 @@ class UsersController extends Controller
             'role_id' => ['sometimes', 'integer', Rule::exists('roles', 'id')],
             'supervisor_id' => ['nullable', 'integer', Rule::exists('users', 'id')],
             'email' => ['sometimes', 'email', 'max:255', Rule::unique('users', 'email')->ignore($user->id)],
+            'staff_id' => ['sometimes', 'nullable', 'string', 'max:40', Rule::unique('users', 'staff_id')->ignore($user->id)],
+            'password' => ['sometimes', 'string', 'min:8'],
         ]);
 
         if (isset($data['role_id']) && $data['role_id'] != $user->role_id) {

@@ -15,6 +15,7 @@ export default function Users() {
   const [section, setSection] = useState('')
   const [role, setRole] = useState('')
   const [showCreate, setShowCreate] = useState(false)
+  const [editFor, setEditFor] = useState(null)
   const [permsFor, setPermsFor] = useState(null)
 
   const canInspect = can('rbac.assign_role_to_user') || can('rbac.assign_permissions') || can('staff.view') || can('staff.edit')
@@ -113,6 +114,7 @@ export default function Users() {
                 <th className="py-2 pr-3">Status</th>
                 {canInspect && <th className="py-2 pr-3">Effective permissions</th>}
                 {can('staff.activate') && <th className="py-2 pr-3">Action</th>}
+                {can('staff.edit') && <th className="py-2 pr-3">Details</th>}
                 {can('staff.edit') && <th className="py-2 pr-3">Password</th>}
               </tr>
             </thead>
@@ -139,6 +141,11 @@ export default function Users() {
                   )}
                   {can('staff.edit') && (
                     <td className="py-2.5 pr-3">
+                      <Btn tone="white" onClick={() => setEditFor(u)}>Edit</Btn>
+                    </td>
+                  )}
+                  {can('staff.edit') && (
+                    <td className="py-2.5 pr-3">
                       <Btn tone="white" onClick={() => forceReset(u)}>Force reset</Btn>
                     </td>
                   )}
@@ -148,6 +155,10 @@ export default function Users() {
           </table>
         </div>
       </Card>
+
+      {editFor && <EditForm user={editFor} sections={sections} roles={assignableRoles} supervisors={supervisors}
+        onClose={() => setEditFor(null)}
+        onDone={(msg) => { setEditFor(null); setFlash(msg); setTimeout(() => setFlash(''), 3000); loadUsers() }} />}
 
       {permsFor && <EffectivePermissionsModal user={permsFor} onClose={() => setPermsFor(null)} />}
     </div>
@@ -201,6 +212,77 @@ function CreateForm({ sections, roles, supervisors, onDone }) {
 
 function L({ label, children }) {
   return <div><label className="block text-xs font-semibold text-slate-600 mb-1.5">{label}</label>{children}</div>
+}
+
+function EditForm({ user, sections, roles, supervisors, onClose, onDone }) {
+  const [err, setErr] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [form, setForm] = useState({
+    full_name: user.full_name || '',
+    email: user.email || '',
+    staff_id: user.staff_id || '',
+    section_id: user.section_id || '',
+    role_id: user.role_id || '',
+    supervisor_id: user.supervisor_id || '',
+    password: '',
+  })
+  const set = (k) => (e) => setForm({ ...form, [k]: e.target.value })
+
+  const submit = async (e) => {
+    e.preventDefault()
+    setErr(''); setBusy(true)
+    const payload = {
+      full_name: form.full_name,
+      email: form.email,
+      staff_id: form.staff_id,
+      section_id: form.section_id,
+      role_id: form.role_id,
+      supervisor_id: form.supervisor_id,
+    }
+    if (form.password) payload.password = form.password
+    try {
+      await api.put(`/users/${user.id}`, payload)
+      onDone('Account details updated.')
+    } catch (ex) { setErr(errMsg(ex)) }
+    setBusy(false)
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4" onClick={onClose}>
+      <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-2xl bg-white shadow-2xl p-6" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start justify-between gap-3 mb-4">
+          <div>
+            <div className="text-lg font-bold text-slate-800">Edit account</div>
+            <div className="text-xs text-slate-500">{user.email} · {user.role} · {user.section}</div>
+          </div>
+          <button onClick={onClose} className="text-xl leading-none text-slate-400 hover:text-slate-600">×</button>
+        </div>
+        {err && <div className="mb-3 rounded-xl bg-red-50 text-red-700 border border-red-100 px-4 py-3 text-sm">⚠️ {err}</div>}
+        <form onSubmit={submit} className="grid sm:grid-cols-2 gap-4">
+          <L label="Full name"><Input className="w-full" value={form.full_name} onChange={set('full_name')} required /></L>
+          <L label="Email"><Input className="w-full" type="email" value={form.email} onChange={set('email')} required /></L>
+          <L label="Staff ID"><Input className="w-full" value={form.staff_id} onChange={set('staff_id')} /></L>
+          <L label="New password (leave blank to keep current)"><Input className="w-full" type="password" value={form.password} onChange={set('password')} minLength={8} placeholder="••••••••" autoComplete="new-password" /></L>
+          <L label="Section"><select className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm bg-white" value={form.section_id} onChange={set('section_id')} required>
+            <option value="">Select section…</option>
+            {sections.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select></L>
+          <L label="Role"><select className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm bg-white" value={form.role_id} onChange={set('role_id')} required>
+            <option value="">Select role…</option>
+            {roles.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+          </select></L>
+          <L label="Reports to (supervisor)"><select className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm bg-white" value={form.supervisor_id} onChange={set('supervisor_id')}>
+            <option value="">— No supervisor —</option>
+            {supervisors.map((s) => <option key={s.id} value={s.id}>{s.full_name} — {s.role} ({s.section})</option>)}
+          </select></L>
+          <div className="sm:col-span-2 flex items-center gap-3">
+            <Btn type="submit" disabled={busy} className="px-6">{busy ? 'Saving…' : 'Save changes'}</Btn>
+            <Btn tone="white" type="button" onClick={onClose}>Cancel</Btn>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
 }
 
 function EffectivePermissionsModal({ user, onClose }) {
