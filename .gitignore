@@ -17,6 +17,8 @@
 /frontend/node_modules
 /mobile/node_modules
 /mobile/.expo
+/mobile/dist
+/apk
 /frontend/dist
 /public/build
 /public/fonts-manifest.dev.json
