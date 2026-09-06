@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useAuth } from '../auth'
 
-const IDLE_MS = 8 * 60 * 1000
+const IDLE_MS = (Number(import.meta.env.VITE_IDLE_MINUTES || 8) * 60) * 1000
 const COUNTDOWN_MS = 10 * 1000
 
 /**

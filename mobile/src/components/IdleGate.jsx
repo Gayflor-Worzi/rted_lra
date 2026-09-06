@@ -3,7 +3,7 @@ import { View, Text, Modal, TouchableOpacity, StyleSheet } from 'react-native'
 import { useAuth } from '../auth'
 import { theme } from '../theme'
 
-const IDLE_MS = 8 * 60 * 1000
+const IDLE_MS = (Number(process.env.EXPO_PUBLIC_IDLE_MINUTES || 8) * 60) * 1000
 const COUNTDOWN_MS = 10 * 1000
 
 /**
