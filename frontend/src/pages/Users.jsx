@@ -289,6 +289,7 @@ function EffectivePermissionsModal({ user, onClose }) {
   const [data, setData] = useState(null)
   const [err, setErr] = useState('')
   const [q, setQ] = useState('')
+  const [showAll, setShowAll] = useState(false)
   const [draft, setDraft] = useState(null)
   const [saving, setSaving] = useState(false)
   const [flash, setFlash] = useState('')
@@ -401,8 +402,12 @@ function EffectivePermissionsModal({ user, onClose }) {
               <Chip on={data.capabilities.rbac_management} label="RBAC mgmt" />
             </div>
 
-            <div className="border-b border-slate-100 px-5 py-3">
+            <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 px-5 py-3">
               <Input placeholder="Filter permissions…" value={q} onChange={(e) => setQ(e.target.value)} className="w-full sm:w-80" />
+              <button type="button" onClick={() => setShowAll((s) => !s)}
+                className="ml-auto shrink-0 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50">
+                {showAll ? 'Effective only' : `All ${total} permissions`}
+              </button>
             </div>
 
             <div className="flex-1 overflow-y-auto px-5 py-4">
@@ -412,6 +417,8 @@ function EffectivePermissionsModal({ user, onClose }) {
                   return [p.name, p.action, p.description].filter(Boolean).join(' ').toLowerCase().includes(q.toLowerCase())
                 })
                 if (!perms.length) return null
+                const visible = showAll ? perms : perms.filter((p) => p.granted || overrides[p.name] !== undefined)
+                if (!visible.length) return null
                 const grantedHere = perms.filter((p) => p.granted).length
                 return (
                   <div key={mod} className="mb-4">
@@ -420,7 +427,7 @@ function EffectivePermissionsModal({ user, onClose }) {
                       <span className="font-normal normal-case text-slate-300">{grantedHere}/{perms.length}</span>
                     </div>
                     <div className="grid gap-x-6 gap-y-1 sm:grid-cols-2">
-                      {perms.map((p) => {
+                      {visible.map((p) => {
                         const gbr = !!p.granted_by_role
                         const gi = !!p.granted_individually
                         const di = !!p.denied_individually
