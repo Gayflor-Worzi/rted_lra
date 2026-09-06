@@ -2,9 +2,10 @@
   "expo": {
     "name": "RETD_LRA Field",
     "slug": "retd-lra-field",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
+    "icon": "./assets/icon.png",
     "splash": {
       "backgroundColor": "#0f172a"
     },
@@ -13,6 +14,10 @@
     },
     "android": {
       "package": "com.retdlra.field",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/icon.png",
+        "backgroundColor": "#ffffff"
+      },
       "permissions": [
         "android.permission.ACCESS_FINE_LOCATION",
         "android.permission.ACCESS_COARSE_LOCATION",
