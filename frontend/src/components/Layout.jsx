@@ -45,6 +45,14 @@ const GROUPS = (can) => [
     ],
   },
   {
+    key: 'gps',
+    label: 'Field GPS',
+    items: [
+      { to: '/gps', label: 'GPS Registry', icon: '📍', show: can('gps.view') },
+      { to: '/gps?tab=reviews', label: 'Certification Reviews', icon: '📝', show: can('gps.review', 'gps.approve') },
+    ],
+  },
+  {
     key: 'admin',
     label: 'Administration',
     items: [

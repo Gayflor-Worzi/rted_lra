@@ -679,6 +679,9 @@ class ValuationsController extends Controller
             'prepared_by_designation' => $v->prepared_by_designation,
             'gps_coordinate' => $v->gps_coordinate,
             'gps_accuracy' => $v->gps_accuracy,
+            'gps_verified' => $v->gps_verified,
+            'gps_certified_at' => $v->gps_certified_at?->toISOString(),
+            'gps_cert_remarks' => $v->gps_cert_remarks,
             'photos' => $v->photos,
             'evidence_photos' => $v->relationLoaded('photos') ? $v->photos?->map(fn (EvidencePhoto $p) => [
                 'photo_reference' => $p->photo_reference,

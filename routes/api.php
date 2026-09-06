@@ -8,6 +8,7 @@ use App\Http\Controllers\Api\DashboardController;
 use App\Http\Controllers\Api\DiscoveryController;
 use App\Http\Controllers\Api\EnforcementController;
 use App\Http\Controllers\Api\EvidenceController;
+use App\Http\Controllers\Api\GpsController;
 use App\Http\Controllers\Api\MEController;
 use App\Http\Controllers\Api\NotificationsController;
 use App\Http\Controllers\Api\PaymentsController;
@@ -154,6 +155,15 @@ Route::get('/property-profile', [DiscoveryController::class, 'profile']);
         Route::get('/enforcement-visits', [EnforcementController::class, 'visitsIndex']);
         Route::post('/enforcement/discover', [EnforcementController::class, 'discover']);
         Route::post('/enforcement/submit-receipt', [EnforcementController::class, 'submitReceipt']);
+
+        // GPS / property location
+        Route::get('/gps/capture-context/{propertyId}', [GpsController::class, 'captureContext']);
+        Route::get('/gps/property/{propertyId}/current', [GpsController::class, 'current']);
+        Route::get('/gps/property/{propertyId}/history', [GpsController::class, 'history']);
+        Route::post('/gps/certify', [GpsController::class, 'certify']);
+        Route::get('/gps/reviews', [GpsController::class, 'pendingReviews']);
+        Route::post('/gps/reviews/{history}/decision', [GpsController::class, 'decision']);
+        Route::put('/gps/property/{propertyId}/correct', [GpsController::class, 'correct']);
 
         // Payments / verification
         Route::get('/payments/queue', [PaymentsController::class, 'queue']);

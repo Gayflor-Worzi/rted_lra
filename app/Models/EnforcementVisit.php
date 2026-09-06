@@ -34,6 +34,10 @@ class EnforcementVisit extends Model
         'gps_coordinate',
         'gps_accuracy',
         'gps_captured_at',
+        'gps_verified',
+        'gps_certified_by',
+        'gps_certified_at',
+        'gps_cert_remarks',
         'visit_photo',
         'remarks',
         'next_action',
@@ -50,6 +54,7 @@ class EnforcementVisit extends Model
             'visit_date' => 'date',
             'next_followup_date' => 'date',
             'gps_captured_at' => 'datetime',
+            'gps_certified_at' => 'datetime',
             'gps_accuracy' => 'decimal:2',
             'snapshot_outstanding' => 'decimal:2',
         ];

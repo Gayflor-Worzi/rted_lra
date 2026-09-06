@@ -78,6 +78,10 @@ class PropertyDiscovery extends Model
         'gps_coordinate',
         'gps_accuracy',
         'gps_captured_at',
+        'gps_verified',
+        'gps_certified_by',
+        'gps_certified_at',
+        'gps_cert_remarks',
         'discovery_date',
         'discovered_by',
         'decision_path',
@@ -101,6 +105,7 @@ class PropertyDiscovery extends Model
         return [
             'gps_accuracy' => 'decimal:2',
             'gps_captured_at' => 'datetime',
+            'gps_certified_at' => 'datetime',
             'discovery_date' => 'date',
             'classified_at' => 'datetime',
             'ac_decided_at' => 'datetime',

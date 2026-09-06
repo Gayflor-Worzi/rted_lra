@@ -18,6 +18,7 @@ import RolesAdmin from './pages/RolesAdmin'
 import AuditLogs from './pages/AuditLogs'
 import Notifications from './pages/Notifications'
 import Payments from './pages/Payments'
+import GpsRegistry from './pages/GpsRegistry'
 
 /**
  * Access Restricted — shown ONLY when a user intentionally navigates to a
@@ -105,6 +106,7 @@ export default function App() {
           <Route path="/audit" element={<Guard perms={['audit.view']}><AuditLogs /></Guard>} />
           <Route path="/notifications" element={<Guard perms={['notifications.view']}><Notifications /></Guard>} />
           <Route path="/payments" element={<Guard perms={['payments.view_queue', 'payments.view_history']}><Payments /></Guard>} />
+          <Route path="/gps" element={<Guard perms={['gps.view']}><GpsRegistry /></Guard>} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Route>
       </Routes>

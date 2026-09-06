@@ -131,4 +131,13 @@ return [
     ['module' => 'targets', 'action' => 'edit', 'name' => 'targets.edit', 'description' => 'Edit staff target'],
     ['module' => 'targets', 'action' => 'approve', 'name' => 'targets.approve', 'description' => 'Approve staff target'],
     ['module' => 'targets', 'action' => 'refresh', 'name' => 'targets.refresh', 'description' => 'Refresh achieved metrics'],
+
+    // GPS / Property Location
+    ['module' => 'gps', 'action' => 'capture', 'name' => 'gps.capture', 'description' => 'Capture GPS during an authorized field engagement'],
+    ['module' => 'gps', 'action' => 'view', 'name' => 'gps.view', 'description' => 'View verified property GPS'],
+    ['module' => 'gps', 'action' => 'certify', 'name' => 'gps.certify', 'description' => 'Certify whether a captured location is the actual property location'],
+    ['module' => 'gps', 'action' => 'update', 'name' => 'gps.update', 'description' => 'Update the official property GPS directly'],
+    ['module' => 'gps', 'action' => 'review', 'name' => 'gps.review', 'description' => 'Review pending GPS certifications'],
+    ['module' => 'gps', 'action' => 'approve', 'name' => 'gps.approve', 'description' => 'Approve or reject GPS certification'],
+    ['module' => 'gps', 'action' => 'view_history', 'name' => 'gps.view_history', 'description' => 'View property GPS history'],
 ];
