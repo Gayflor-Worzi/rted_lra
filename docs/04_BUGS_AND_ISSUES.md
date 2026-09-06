@@ -93,8 +93,8 @@ After any failed save, `err` is set and the early `if (err) return <ErrorBox/>` 
 
 ### D2 [HIGH] Missing password-reset screen (web) — `login` path
 `auth.jsx` supports `mustReset`, but `Login.jsx` never routes to a reset form → same deadlock as B1.
-### D3 [MED] Demo credentials hardcoded — `frontend/src/pages/Login.jsx:8-9`
-`wooze27@gmail.com` / `admin123` prefilled in production code.
+### D3 [RESOLVED] Demo credentials hardcoded — `frontend/src/pages/Login.jsx:8-9`
+`admin123` was removed from the codebase (Seeder now uses `SEED_ADMIN_PASSWORD`, random if unset) and the live admin password was rotated; no prefilled credentials remain.
 ### D4 [MED] Notifications endless spinner on request failure — `frontend/src/pages/Notifications.jsx`
 `.catch(() => {})` leaves `rows === null` → spinner forever, no error or retry.
 ### D5 [MED] `dangerouslySetInnerHTML` on pagination labels — `frontend/src/pages/Bills.jsx`

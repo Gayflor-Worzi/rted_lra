@@ -2,7 +2,7 @@
 // rbac_test.php - permission catalog, role scoping, assignment guards, protected roles.
 require __DIR__.'/api_test_helpers.php';
 
-$admin = login('wooze27@gmail.com', 'admin123');
+$admin = login('wooze27@gmail.com', (getenv('ADMIN_TEST_PASSWORD') ?: 'change-me-now'));
 $am = login('account.manager@test.lra', 'manager123');
 $officer = login('enf.officer@test.lra', 'officer123');
 $valManager = login('val.manager@test.lra', 'manager123');

@@ -2,7 +2,7 @@
 // phase3_6_test.php - Enforcement, Payments, Valuations, M&E/Appeals, Reports.
 require __DIR__.'/api_test_helpers.php';
 
-$admin = login('wooze27@gmail.com', 'admin123');
+$admin = login('wooze27@gmail.com', (getenv('ADMIN_TEST_PASSWORD') ?: 'change-me-now'));
 $acct  = login('account.manager@test.lra', 'manager123');
 $enf   = login('enf.officer@test.lra', 'officer123');
 $val   = login('val.officer@test.lra', 'officer123');

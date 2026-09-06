@@ -137,5 +137,5 @@ Consistently implemented through `AuthServiceProvider` policy auto-discovery + e
 ## 7. Database / Migrations & Seeding
 
 - ~25 migrations cover all models above plus `add_hash_to_audit_logs` (chain backfill, batch 13).
-- Seeders: roles, `tax_rates`, demo users (`wooze27@gmail.com` / `admin123` admin; `enf.officer@test.lra` / `officer123` enforcement), LRA demo dataset.
+- Seeders: roles, `tax_rates`, demo users (admin `wooze27@gmail.com` — seed password from `SEED_ADMIN_PASSWORD`, random otherwise; `enf.officer@test.lra` / `officer123` enforcement), LRA demo dataset.
 - Deliberately missing: `already_visited_reset_page` column referenced by login logic (bug 1).

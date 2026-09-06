@@ -233,7 +233,7 @@ Officer respond → [Answered] → close (raiser/M&E/Admin) → [Closed]
 
 | Role | Email | Password |
 |---|---|---|
-| System Administrator | `wooze27@gmail.com` | `admin123` |
+| System Administrator | `wooze27@gmail.com` | (set via `SEED_ADMIN_PASSWORD` on `db:seed`; random if unset) |
 | Enforcement Officer | `enf.officer@test.lra` | `officer123` |
 
 **Access:** Web console `http://localhost:5173` · Mobile: Expo Go, `exp://<LAN-IP>:8081` (same Wi-Fi as the PC).

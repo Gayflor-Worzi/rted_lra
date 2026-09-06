@@ -3,7 +3,7 @@
 require __DIR__.'/api_test_helpers.php';
 
 $am = login('account.manager@test.lra', 'manager123');
-$admin = login('wooze27@gmail.com', 'admin123');
+$admin = login('wooze27@gmail.com', (getenv('ADMIN_TEST_PASSWORD') ?: 'change-me-now'));
 $officer = login('enf.officer@test.lra', 'officer123');
 check($am && $admin && $officer, 'demo logins');
 

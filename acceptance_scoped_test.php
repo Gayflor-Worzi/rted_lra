@@ -4,7 +4,7 @@
 //   VAL-001, BILL-001, BILL-002 isolation + cross-role assignment rejection.
 require __DIR__.'/api_test_helpers.php';
 
-$admin = login('wooze27@gmail.com', 'admin123');
+$admin = login('wooze27@gmail.com', (getenv('ADMIN_TEST_PASSWORD') ?: 'change-me-now'));
 check($admin !== null, 'admin logs in');
 if (!$admin) { summary('Acceptance (role-scoped)'); }
 

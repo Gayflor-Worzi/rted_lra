@@ -6,7 +6,7 @@ echo "Phase 10 — Dashboard Data Integrity & Accuracy Audit\n";
 echo "==================================================\n";
 
 // ---------- 1. Authenticate ----------
-$admin   = login('wooze27@gmail.com', 'admin123');
+$admin   = login('wooze27@gmail.com', (getenv('ADMIN_TEST_PASSWORD') ?: 'change-me-now'));
 $officer = login('enf.officer@test.lra', 'officer123');
 $acctmgr = login('account.manager@test.lra', 'manager123');
 

@@ -9,7 +9,7 @@ check($r['data']['source_of_bill'] === 'Source Tax System', 'meta declares sourc
 check($r['data']['generates_document_numbers'] === false, 'meta says we never generate Document #');
 
 // Auth + authenticated surface
-$token = login('wooze27@gmail.com', 'admin123');
+$token = login('wooze27@gmail.com', (getenv('ADMIN_TEST_PASSWORD') ?: 'change-me-now'));
 check($token !== null, 'admin login');
 
 if ($token) {

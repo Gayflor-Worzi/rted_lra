@@ -22,7 +22,7 @@ function download(string $url, string $token): array
 echo "Phase 8 — Titled Reports Export (CSV/PDF)\n";
 echo "==========================================\n";
 
-$admin = login('wooze27@gmail.com', 'admin123');
+$admin = login('wooze27@gmail.com', (getenv('ADMIN_TEST_PASSWORD') ?: 'change-me-now'));
 $officer = login('enf.officer@test.lra', 'officer123');
 
 // ---- CSV exports -----------------------------------------------------------

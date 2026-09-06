@@ -10,6 +10,7 @@ use App\Models\Task;
 use App\Models\User;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Str;
 
 class DatabaseSeeder extends Seeder
 {
@@ -248,8 +249,14 @@ class DatabaseSeeder extends Seeder
 
     private function seedUsers(): void
     {
+        $adminPassword = env('SEED_ADMIN_PASSWORD');
+        if (! $adminPassword) {
+            $adminPassword = Str::random(16);
+            info('Admin seed password (wooze27@gmail.com): '.$adminPassword.' — set SEED_ADMIN_PASSWORD to pin it for local dev.');
+        }
+
         $accounts = [
-            ['name' => 'System Administrator', 'role' => 'System Administrator', 'section' => 'SYS', 'email' => 'wooze27@gmail.com', 'password' => 'admin123'],
+            ['name' => 'System Administrator', 'role' => 'System Administrator', 'section' => 'SYS', 'email' => 'wooze27@gmail.com', 'password' => $adminPassword],
             ['name' => 'Assistant Commissioner (RETD)', 'role' => 'Assistant Commissioner', 'section' => 'MGT', 'email' => 'assistant.commissioner@test.lra', 'password' => 'ac123'],
             ['name' => 'Account Manager', 'role' => 'Account Manager', 'section' => 'ACCT', 'email' => 'account.manager@test.lra', 'password' => 'manager123'],
             ['name' => 'Account Supervisor', 'role' => 'Account Supervisor', 'section' => 'ACCT', 'email' => 'account.supervisor@test.lra', 'password' => 'account123'],

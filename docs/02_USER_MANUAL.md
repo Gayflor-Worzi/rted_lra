@@ -9,7 +9,7 @@ Common logins (demo data):
 
 | Role | Email | Password |
 |---|---|---|
-| System Administrator | `wooze27@gmail.com` | `admin123` |
+| System Administrator | `wooze27@gmail.com` | (set via `SEED_ADMIN_PASSWORD` on `db:seed`; random if unset) |
 | Enforcement Officer | `enf.officer@test.lra` | `officer123` |
 
 ---

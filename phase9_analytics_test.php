@@ -5,7 +5,7 @@ require __DIR__.'/api_test_helpers.php';
 echo "Phase 9 — Consolidated Dashboard Analytics\n";
 echo "==========================================\n";
 
-$admin = login('wooze27@gmail.com', 'admin123');
+$admin = login('wooze27@gmail.com', (getenv('ADMIN_TEST_PASSWORD') ?: 'change-me-now'));
 $officer = login('enf.officer@test.lra', 'officer123');
 $acctmgr = login('account.manager@test.lra', 'manager123');
 $valmgr = login('val.manager@test.lra', 'manager123');
