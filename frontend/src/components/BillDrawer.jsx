@@ -262,6 +262,9 @@ export default function BillDrawer({ billId, taskId, onClose, onChanged, embedde
               <Field label="Document #" value={bill.document_number} mono />
               <Field label="Property ID" value={bill.property_id} mono />
               <Field label="Recipient" value={bill.recipient_name || bill.recipient_type} />
+              {bill.gps_coordinate && (
+                <Field label="GPS" value={`${bill.gps_coordinate}${bill.gps_accuracy != null ? ` · ±${bill.gps_accuracy}m` : ''}`} mono />
+              )}
             </div>
             <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 gap-3 border-t border-slate-100 pt-3">
               {[
@@ -286,6 +289,7 @@ export default function BillDrawer({ billId, taskId, onClose, onChanged, embedde
               <Badge tone="blue">{bill.delivery_status}</Badge>
               <Badge tone={paymentTone(bill.payment_status)}>{bill.payment_status}</Badge>
               {bill.escalation_stage && <Badge tone="amber">{bill.escalation_stage}</Badge>}
+              {taskDetail?.sync_source === 'mobile' && <Badge tone="navy">📱 synced</Badge>}
             </div>
             <button onClick={() => setProfile(bill)} className="mt-3 inline-flex items-center gap-1 text-xs font-semibold text-brand-600 hover:text-brand-700 hover:underline">
               View full property lifecycle (discovery · valuation · bill) →

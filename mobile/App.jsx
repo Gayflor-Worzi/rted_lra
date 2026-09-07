@@ -25,6 +25,7 @@ import ValuationScreen from './src/screens/ValuationScreen'
 import NewValuationScreen from './src/screens/NewValuationScreen'
 import ValuationDetailScreen from './src/screens/ValuationDetailScreen'
 import PaymentsScreen from './src/screens/PaymentsScreen'
+import NoticesScreen from './src/screens/NoticesScreen'
 
 const Stack = createNativeStackNavigator()
 const Tab = createBottomTabNavigator()
@@ -116,6 +117,7 @@ function RootNav() {
       ) : (
         <>
           <Stack.Screen name="Main" component={TabNav} options={{ headerShown: false }} />
+          <Stack.Screen name="Notices" component={NoticesScreen} options={detailHeader('Notices')} />
           <Stack.Screen name="TaskDetail" component={TaskDetailScreen} options={detailHeader('Task Detail')} />
           <Stack.Screen name="VisitForm" component={VisitFormScreen} options={detailHeader('Record Field Visit')} />
           <Stack.Screen name="SubmitReceipt" component={ReceiptScreen} options={detailHeader('Submit Receipt')} />

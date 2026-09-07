@@ -172,6 +172,8 @@ export default function TaskDetailScreen({ navigation, route }) {
         <InfoRow label="Assigned by" value={t.assigned_by || '—'} />
         {t.assignment_status && <InfoRow label="Assignment status" value={t.assignment_status} />}
         {t.stage && <InfoRow label="Stage" value={t.stage} />}
+        {t.sync_status ? <InfoRow label="Sync status" value={`${String(t.sync_status).replace(/_/g, ' ')}${t.sync_source ? ` · via ${t.sync_source}` : ''}`} /> : null}
+        {t.last_sync_at ? <InfoRow label="Last synced" value={new Date(t.last_sync_at).toLocaleString()} /> : null}
         {t.start && <InfoRow label="Started" value={fd(t.started_at)} />}
         {t.completed_at && <InfoRow label="Completed" value={fd(t.completed_at)} />}
         {t.remarks ? <InfoRow label="Remarks" value={t.remarks} /> : null}
@@ -225,6 +227,8 @@ export default function TaskDetailScreen({ navigation, route }) {
             <InfoRow label="Delivered" value={fd(bill.delivery_date)} />
             <InfoRow label="30-day notice" value={fd(bill.thirty_day_notice_date)} />
             <InfoRow label="Final notice" value={fd(bill.final_notice_date)} />
+            {bill.gps_coordinate ? <InfoRow label="GPS coordinate" value={bill.gps_coordinate} /> : null}
+            {bill.gps_accuracy != null ? <InfoRow label="GPS accuracy" value={`${bill.gps_accuracy} m`} /> : null}
             {(bill.account_staff || bill.enforcement_officer) ? (
               <>
                 <InfoRow label="Account staff" value={bill.account_staff || '—'} />

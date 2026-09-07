@@ -98,7 +98,7 @@ export default function TasksTab({ presetScope, presetGroup }) {
                 {list.map((t) => (
                   <tr key={t.id} className="hover:bg-slate-50">
                     {cell(<span className="font-semibold text-navy-800">{t.bill?.property_id || '—'}</span>)}
-                    {cell(<span className="flex items-center gap-1.5"><Badge tone={taskTone(t.status)}>{t.status}</Badge>{t.priority > 1 && <Badge tone="red">P{t.priority}</Badge>}</span>)}
+                    {cell(<span className="flex items-center gap-1.5"><Badge tone={taskTone(t.status)}>{t.status}</Badge>{t.priority > 1 && <Badge tone="red">P{t.priority}</Badge>}{t.sync_source === 'mobile' && <Badge tone="navy">📱 synced</Badge>}</span>)}
                     {cell(<span className="text-right font-medium text-navy-800 block">{fmtMoney(t.bill?.total_tax_due)}</span>)}
                     {cell(<span className="text-slate-600">{t.bill?.tin || '—'}</span>)}
                     {cell(<Badge tone={PAYMENT_TONES[t.bill?.payment_status] || 'slate'}>{t.bill?.payment_status || '—'}</Badge>)}

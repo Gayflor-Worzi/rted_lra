@@ -101,6 +101,10 @@ export default function HomeScreen() {
   }
 
   const showNotice = () => {
+    if (hasAny(user, ['notifications.view'])) {
+      safeNav('Notices')
+      return
+    }
     Alert.alert('Notices', `${data?.notifications?.unread || 0} unread notice(s) in your section.`, [{ text: 'OK' }])
   }
 
