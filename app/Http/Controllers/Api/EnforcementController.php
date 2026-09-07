@@ -10,6 +10,7 @@ use App\Models\PropertyBill;
 use App\Models\PropertyDiscovery;
 use App\Models\Task;
 use App\Services\AuditService;
+use App\Services\SyncService;
 use App\Services\TaskService;
 use App\Services\TaskWorkflowService;
 use Illuminate\Http\Request;
@@ -26,6 +27,7 @@ class EnforcementController extends Controller
         private readonly TaskService $tasks,
         private readonly AuditService $audit,
         private readonly TaskWorkflowService $workflow,
+        private readonly SyncService $sync,
     ) {}
 
     /**
@@ -143,10 +145,16 @@ class EnforcementController extends Controller
         $user = $request->user();
         abort_unless($task->assigned_to == $user->id, 403, 'Task not assigned to you.');
 
+        $syncId = $this->sync->localId($request);
+        if ($syncId && ($replay = $this->sync->findForReplay($user->id, $syncId))) {
+            return $this->sync->replayResponse($replay);
+        }
+
         $data = $request->validate([
             'action' => ['required', Rule::in(['completed', 'complete', 'escalate'])],
             'visit_date' => 'nullable|date',
             'notes' => 'nullable|string|max:2000',
+            'local_transaction_id' => 'nullable|string|max:80',
         ]);
 
         try {
@@ -174,8 +182,13 @@ class EnforcementController extends Controller
             }
         }
 
+        $payload = ['task_id' => $task->id, 'task_reference' => $task->task_reference, 'status' => $task->status];
+        if ($syncId) {
+            $this->sync->record($user->id, $syncId, 'action', (int) $task->id, $payload);
+        }
+
         return response()->json([
-            'data' => ['task_id' => $task->id, 'task_reference' => $task->task_reference, 'status' => $task->status],
+            'data' => $payload,
             'message' => $data['action'] === 'escalate' ? 'Assignment escalated.' : 'Assignment completed.',
         ]);
     }
@@ -187,6 +200,11 @@ class EnforcementController extends Controller
     {
         $user = $request->user();
         abort_unless($user->canPermission('enforcement.record_visit'), 403, 'Missing permission: enforcement.record_visit');
+
+        $syncId = $this->sync->localId($request);
+        if ($syncId && ($replay = $this->sync->findForReplay($user->id, $syncId))) {
+            return $this->sync->replayResponse($replay);
+        }
 
         $data = $request->validate([
             'assignment_id' => 'nullable|integer|exists:tasks,id',
@@ -218,6 +236,7 @@ class EnforcementController extends Controller
             'claim_property_id' => 'nullable|string|max:60',
             'claim_tin' => 'nullable|string|max:40',
             'claim_tax_due_date' => 'nullable|date',
+            'local_transaction_id' => 'nullable|string|max:80',
         ]);
 
         $taskId = $data['assignment_id'] ?? $data['task_id'] ?? null;
@@ -372,14 +391,19 @@ class EnforcementController extends Controller
 
         $this->audit->record($visit, 'enforcement.visit_complete', $user->id, [], ['task_id' => $visit->task_id]);
 
+        $payload = [
+            'id' => $visit->id,
+            'visit_reference' => $visit->visit_reference,
+            'task_id' => $visit->task_id,
+            'bill_id' => $visit->bill_id,
+            'gps_accuracy' => $visit->gps_accuracy,
+        ];
+        if ($syncId) {
+            $this->sync->record($user->id, $syncId, 'visit', (int) $visit->id, $payload);
+        }
+
         return response()->json([
-            'data' => [
-                'id' => $visit->id,
-                'visit_reference' => $visit->visit_reference,
-                'task_id' => $visit->task_id,
-                'bill_id' => $visit->bill_id,
-                'gps_accuracy' => $visit->gps_accuracy,
-            ],
+            'data' => $payload,
             'message' => 'Visit recorded.',
         ], 201);
     }
@@ -442,6 +466,11 @@ class EnforcementController extends Controller
         $user = $request->user();
         abort_unless($user->hasAnyPermission(['enforcement.upload_evidence', 'discovery.create']), 403, 'Missing permission.');
 
+        $syncId = $this->sync->localId($request);
+        if ($syncId && ($replay = $this->sync->findForReplay($user->id, $syncId))) {
+            return $this->sync->replayResponse($replay);
+        }
+
         $data = $request->validate([
             'property_address' => 'required|string|max:255',
             'gps_lat' => 'required|numeric',
@@ -449,6 +478,7 @@ class EnforcementController extends Controller
             'property_classification' => 'nullable|string|max:100',
             'owner_name' => 'nullable|string|max:255',
             'documents' => 'nullable|array',
+            'local_transaction_id' => 'nullable|string|max:80',
         ]);
 
         $gps = trim($data['gps_lat'].','.$data['gps_lng']);
@@ -474,8 +504,13 @@ class EnforcementController extends Controller
 
         $this->tasks->notifySection('VAL', 'Property discovery', "Discovery {$discovery->discovery_reference} for {$data['property_address']} is queued for review.", 'discovery');
 
+        $payload = ['id' => $discovery->id, 'discovery_reference' => $discovery->discovery_reference, 'status' => $discovery->status];
+        if ($syncId) {
+            $this->sync->record($user->id, $syncId, 'discovery', (int) $discovery->id, $payload);
+        }
+
         return response()->json([
-            'data' => ['id' => $discovery->id, 'discovery_reference' => $discovery->discovery_reference, 'status' => $discovery->status],
+            'data' => $payload,
             'message' => 'Property discovery registered for downstream processing.',
         ], 201);
     }
@@ -551,6 +586,11 @@ private function visitOutcome(string $visitStatus): string
         $user = $request->user();
         abort_unless($user->canPermission('payments.claim'), 403, 'Missing permission: payments.claim');
 
+        $syncId = $this->sync->localId($request);
+        if ($syncId && ($replay = $this->sync->findForReplay($user->id, $syncId))) {
+            return $this->sync->replayResponse($replay);
+        }
+
         $data = $request->validate([
             'billing_number' => 'required|string|max:80',
             'bill_id' => 'nullable|integer|exists:property_bills,id',
@@ -563,6 +603,7 @@ private function visitOutcome(string $visitStatus): string
             'property_id' => 'nullable|string|max:60',
             'tin' => 'nullable|string|max:40',
             'tax_due_date' => 'nullable|date',
+            'local_transaction_id' => 'nullable|string|max:80',
         ]);
 
         $bill = PropertyBill::where('document_number', $data['billing_number'])->first()
@@ -606,8 +647,13 @@ private function visitOutcome(string $visitStatus): string
 
         $this->tasks->notifySection('ACCT', 'Payment claim', "Payment claim for bill {$bill->document_number} awaiting verification.", 'payments');
 
+        $payload = ['id' => $verification->id, 'bill_id' => $bill->id, 'document_number' => $bill->document_number];
+        if ($syncId) {
+            $this->sync->record($user->id, $syncId, 'receipt', (int) $verification->id, $payload);
+        }
+
         return response()->json([
-            'data' => ['id' => $verification->id, 'bill_id' => $bill->id, 'document_number' => $bill->document_number],
+            'data' => $payload,
             'message' => 'Payment claim submitted for verification.',
         ], 201);
     }

@@ -9,12 +9,13 @@ use App\Http\Controllers\Api\DiscoveryController;
 use App\Http\Controllers\Api\EnforcementController;
 use App\Http\Controllers\Api\EvidenceController;
 use App\Http\Controllers\Api\GpsController;
+use App\Http\Controllers\Api\PaymentsController;
 use App\Http\Controllers\Api\MEController;
 use App\Http\Controllers\Api\NotificationsController;
-use App\Http\Controllers\Api\PaymentsController;
 use App\Http\Controllers\Api\ReportsController;
 use App\Http\Controllers\Api\RolesController;
 use App\Http\Controllers\Api\SectionsController;
+use App\Http\Controllers\Api\SyncController;
 use App\Http\Controllers\Api\TargetsController;
 use App\Http\Controllers\Api\TaskController;
 use App\Http\Controllers\Api\UsersController;
@@ -155,6 +156,9 @@ Route::get('/property-profile', [DiscoveryController::class, 'profile']);
         Route::get('/enforcement-visits', [EnforcementController::class, 'visitsIndex']);
         Route::post('/enforcement/discover', [EnforcementController::class, 'discover']);
         Route::post('/enforcement/submit-receipt', [EnforcementController::class, 'submitReceipt']);
+
+        // Sync ledger (offline-first field submissions)
+        Route::get('/sync/transactions', [SyncController::class, 'transactions']);
 
         // GPS / property location
         Route::get('/gps/capture-context/{propertyId}', [GpsController::class, 'captureContext']);

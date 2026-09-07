@@ -12,6 +12,7 @@ use App\Models\User;
 use App\Models\Valuation;
 use App\Services\AssignmentEligibilityService;
 use App\Services\AuditService;
+use App\Services\SyncService;
 use App\Services\TaskService;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
@@ -32,6 +33,7 @@ class DiscoveryController extends Controller
     public function __construct(
         private readonly TaskService $tasks,
         private readonly AuditService $audit,
+        private readonly SyncService $sync,
     ) {
     }
 
@@ -84,6 +86,11 @@ class DiscoveryController extends Controller
         $user = $request->user();
         abort_unless($user->canPermission('discovery.create'), 403, 'Missing permission: discovery.create');
 
+        $syncId = $this->sync->localId($request);
+        if ($syncId && ($replay = $this->sync->findForReplay($user->id, $syncId))) {
+            return $this->sync->replayResponse($replay);
+        }
+
         $data = $request->validate($this->rules());
         abort_unless($this->hasLocationOrAddress($data), 422, 'Provide a property address or GPS coordinate for the discovery.');
 
@@ -117,8 +124,13 @@ class DiscoveryController extends Controller
 
         $this->tasks->notifySection('VAL', 'New property discovered', "Discovery {$discovery->discovery_reference} for {$discovery->property_address} is awaiting review.", 'enforcement');
 
+        $data = $this->present($discovery->fresh(['discoverer:id,full_name']));
+        if ($syncId) {
+            $this->sync->record($user->id, $syncId, 'discovery', $discovery->id, $data);
+        }
+
         return response()->json([
-            'data' => $this->present($discovery->fresh(['discoverer:id,full_name'])),
+            'data' => $data,
             'message' => 'Property discovery recorded.',
         ], 201);
     }
@@ -549,6 +561,7 @@ class DiscoveryController extends Controller
             'gps_captured_at' => 'nullable|date',
             'discovery_date' => 'nullable|date',
             'remarks' => 'nullable|string|max:2000',
+            'local_transaction_id' => 'nullable|string|max:80',
         ];
     }
 
