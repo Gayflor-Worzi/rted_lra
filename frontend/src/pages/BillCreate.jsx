@@ -16,6 +16,9 @@ export default function BillCreate({ onClose, onCreated }) {
     tin: '',
     property_classification: '',
     property_address: '',
+    gps_coordinate: '',
+    gps_accuracy: '',
+    gps_captured_at: '',
     assessed_value: '',
     tax_amount: '',
     interest_charged: '0',
@@ -27,6 +30,8 @@ export default function BillCreate({ onClose, onCreated }) {
     assigned_enforcement_officer_id: '',
     remarks: '',
   })
+  const [locBusy, setLocBusy] = useState(false)
+  const [locError, setLocError] = useState('')
 
   useEffect(() => {
     api.get('/users', { params: { role: 'Enforcement Officer', per_page: 200 } })
@@ -36,9 +41,35 @@ export default function BillCreate({ onClose, onCreated }) {
 
   const set = (k) => (e) => {
     let v = e.target.value
-    if (['assessed_value', 'tax_amount', 'interest_charged', 'penalty_charged'].includes(k)) v = e.target.value === '' ? '' : Number(e.target.value)
+    if (['assessed_value', 'tax_amount', 'interest_charged', 'penalty_charged', 'gps_accuracy'].includes(k)) v = e.target.value === '' ? '' : Number(e.target.value)
     if (k === 'assigned_enforcement_officer_id') v = e.target.value === '' ? '' : Number(e.target.value)
     setForm({ ...form, [k]: v })
+  }
+
+  const captureLoc = () => {
+    setLocError('')
+    if (!navigator.geolocation) {
+      setLocError('Geolocation is not supported by this browser.')
+      return
+    }
+    setLocBusy(true)
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const { latitude, longitude, accuracy } = pos.coords
+        setForm({
+          ...form,
+          gps_coordinate: `${latitude.toFixed(6)},${longitude.toFixed(6)}`,
+          gps_accuracy: Math.round(accuracy),
+          gps_captured_at: new Date().toISOString(),
+        })
+        setLocBusy(false)
+      },
+      (e) => {
+        setLocError(e?.message || 'Unable to capture location. Check browser permissions.')
+        setLocBusy(false)
+      },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
+    )
   }
 
   const total = (Number(form.tax_amount) || 0) + (Number(form.interest_charged) || 0) + (Number(form.penalty_charged) || 0)
@@ -115,6 +146,25 @@ export default function BillCreate({ onClose, onCreated }) {
                 </select></F>
                 <F label="Tax period"><Input className="w-full" value={form.tax_period} onChange={set('tax_period')} /></F>
                 <F label="Assessed value (US$)"><Input className="w-full" type="number" min="0" value={form.assessed_value} onChange={set('assessed_value')} /></F>
+              </div>
+            </Card>
+
+            <Card className="!p-0 shadow-none border border-slate-100">
+              <div className="text-xs font-semibold text-slate-500 px-4 pt-4 uppercase tracking-wider">Property location (GPS)</div>
+              <div className="grid sm:grid-cols-2 gap-4 p-4">
+                <F label="GPS coordinates"><Input className="w-full" value={form.gps_coordinate} onChange={set('gps_coordinate')} placeholder="lat,lng — capture or paste" /></F>
+                <F label="Accuracy (m)"><Input className="w-full" type="number" min="0" value={form.gps_accuracy} onChange={set('gps_accuracy')} placeholder="e.g. 12" /></F>
+                <div className="sm:col-span-2 flex items-center gap-3">
+                  <button type="button" onClick={captureLoc} disabled={locBusy} className="px-3 py-2 rounded-xl text-sm font-semibold bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed">
+                    {locBusy ? 'Capturing location…' : '📍 Capture my location'}
+                  </button>
+                  {form.gps_coordinate && (
+                    <span className="text-xs font-medium text-emerald-600 bg-emerald-50 border border-emerald-100 px-2 py-1 rounded-lg">
+                      {form.gps_coordinate}{form.gps_accuracy ? ` · ±${form.gps_accuracy}m` : ''}
+                    </span>
+                  )}
+                  {locError && <span className="text-xs font-medium text-amber-600">{locError}</span>}
+                </div>
               </div>
             </Card>
 

@@ -66,6 +66,9 @@ class PropertyBill extends Model
         'tin',
         'property_classification',
         'property_address',
+        'gps_coordinate',
+        'gps_accuracy',
+        'gps_captured_at',
         'assessed_value',
         'tax_amount',
         'interest_charged',
@@ -97,6 +100,7 @@ class PropertyBill extends Model
     {
         return [
             'date_logged' => 'date',
+            'gps_captured_at' => 'datetime',
             'delivery_date' => 'date',
             'thirty_day_notice_date' => 'date',
             'final_notice_date' => 'date',
