@@ -150,7 +150,7 @@ class ValuationsController extends Controller
         $this->tasks->notifySection('VAL', 'Valuation drafted', "Valuation {$valuation->valuation_reference} drafted.", 'valuation');
 
         return response()->json([
-            'data' => $this->present($valuation->fresh(['valuationOfficer:id,full_name', 'descriptions', 'photos'])),
+            'data' => $this->present($valuation->fresh(['valuationOfficer:id,full_name', 'descriptions', 'evidencePhotos'])),
             'message' => 'Valuation draft created.',
         ], 201);
     }
@@ -159,7 +159,7 @@ class ValuationsController extends Controller
     {
         abort_unless($this->canSee($valuation), 403, 'Valuation outside your data scope.');
 
-        $valuation->load(['valuationOfficer:id,full_name', 'bill:id,document_number,property_id', 'reviews', 'descriptions', 'photos', 'discovery:id,discovery_reference,status']);
+        $valuation->load(['valuationOfficer:id,full_name', 'bill:id,document_number,property_id', 'reviews', 'descriptions', 'evidencePhotos', 'discovery:id,discovery_reference,status']);
 
         return response()->json(['data' => $this->present($valuation)]);
     }
@@ -204,7 +204,7 @@ class ValuationsController extends Controller
         $this->audit->record($valuation, 'valuation.updated', $user->id, [], $data);
 
         return response()->json([
-            'data' => $this->present($valuation->fresh(['descriptions', 'photos'])),
+            'data' => $this->present($valuation->fresh(['descriptions', 'evidencePhotos'])),
             'message' => 'Valuation updated.',
         ]);
     }
@@ -303,7 +303,7 @@ class ValuationsController extends Controller
         $this->tasks->notifySection('VAL', 'Valuation submitted', "Valuation {$valuation->valuation_reference} awaiting manager review.", 'valuation');
 
         return response()->json([
-            'data' => $this->present($valuation->fresh(['descriptions', 'photos'])),
+            'data' => $this->present($valuation->fresh(['descriptions', 'evidencePhotos'])),
             'message' => 'Valuation submitted.',
         ]);
     }
@@ -550,7 +550,7 @@ class ValuationsController extends Controller
         if (! $valuation->descriptions()->exists()) {
             $missing[] = 'at least one Property Description row';
         }
-        if (! $valuation->photos && $valuation->photos()->count() === 0) {
+        if (! $valuation->photos && $valuation->evidencePhotos()->count() === 0) {
             $missing[] = 'a Property Photo';
         }
 
@@ -683,7 +683,7 @@ class ValuationsController extends Controller
             'gps_certified_at' => $v->gps_certified_at?->toISOString(),
             'gps_cert_remarks' => $v->gps_cert_remarks,
             'photos' => $v->photos,
-            'evidence_photos' => $v->relationLoaded('photos') ? $v->photos?->map(fn (EvidencePhoto $p) => [
+            'evidence_photos' => $v->relationLoaded('evidencePhotos') ? $v->evidencePhotos?->map(fn (EvidencePhoto $p) => [
                 'photo_reference' => $p->photo_reference,
                 'photo_type' => $p->photo_type,
                 'file_path' => $p->file_path,

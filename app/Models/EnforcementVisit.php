@@ -73,7 +73,7 @@ class EnforcementVisit extends Model
     public static function nextReference(): string
     {
         $year = date('Y');
-        $last = self::where('visit_reference', 'like', "VIS-{$year}-%")->max('id');
+        $last = self::withTrashed()->where('visit_reference', 'like', "VIS-{$year}-%")->max('id');
 
         return sprintf('VIS-%s-%05d', $year, ($last ?: 0) + 1);
     }

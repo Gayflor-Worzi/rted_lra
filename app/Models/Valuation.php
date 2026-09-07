@@ -130,7 +130,7 @@ class Valuation extends Model
         return $this->hasMany(ValuationPropertyDescription::class, 'valuation_id')->orderBy('seq');
     }
 
-    public function photos(): HasMany
+    public function evidencePhotos(): HasMany
     {
         return $this->hasMany(EvidencePhoto::class, 'valuation_id');
     }

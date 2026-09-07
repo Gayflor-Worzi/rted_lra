@@ -51,6 +51,8 @@ class AuditableObserver
             'previous_hash' => $previousHash,
         ]);
 
+        $entry->refresh();
+
         $entry->update(['hash' => $entry->computeHash()]);
     }
 }

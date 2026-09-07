@@ -27,6 +27,10 @@ class AuditService
             'previous_hash' => $previous,
         ]);
 
+        // Hash the PERSISTED row so the chain is byte-stable even if Eloquent
+        // normalizes a value between the in-memory snapshot and the DB write.
+        $entry->refresh();
+
         $entry->update(['hash' => $entry->computeHash()]);
 
         return $entry;

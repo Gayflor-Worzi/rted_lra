@@ -130,7 +130,7 @@ class PropertyDiscovery extends Model
     public static function nextReference(): string
     {
         $year = date('Y');
-        $last = self::where('discovery_reference', 'like', "ND-{$year}-%")->max('id');
+        $last = self::withTrashed()->where('discovery_reference', 'like', "ND-{$year}-%")->max('id');
 
         return sprintf('ND-%s-%05d', $year, ($last ?: 0) + 1);
     }
