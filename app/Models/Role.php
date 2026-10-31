@@ -23,6 +23,17 @@ class Role extends Model
         'is_active' => 'boolean',
     ];
 
+    protected static function booted(): void
+    {
+        static::updated(function (Role $role): void {
+            if ($role->wasChanged(['name', 'section_id', 'default_scope'])) {
+                User::query()->where('role_id', $role->id)->each(function (User $user): void {
+                    app(\App\Services\StaffOrganizationHistoryService::class)->record($user);
+                });
+            }
+        });
+    }
+
     public function permissions(): BelongsToMany
     {
         return $this->belongsToMany(Permission::class, 'role_permissions', 'role_id', 'permission_id');

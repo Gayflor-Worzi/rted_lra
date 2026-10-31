@@ -63,7 +63,7 @@ class TaskWorkflowService
     /** Next required action on the task. */
     public function nextAction(Task $task, ?PropertyBill $bill = null): array
     {
-        $terminal = in_array($task->status, ['Resolved', 'Closed', 'Paid'], true);
+        $terminal = in_array($task->status, ['Resolved', 'Closed', 'Paid', 'Partially Paid'], true);
 
         if ($terminal) {
             return $this->none($task->status === 'Paid' ? 'Bill fully paid.' : 'No further action required.');
@@ -82,7 +82,6 @@ class TaskWorkflowService
         $bill ??= $this->resolveBill($task);
         $today = now()->startOfDay();
 
-        $due = $task->due_date ? Carbon::parse($task->due_date)->startOfDay() : null;
         $milestone = null;
 
         if ($bill && $task->reference_type === 'property_bill') {
@@ -103,7 +102,7 @@ class TaskWorkflowService
 
         return [
             'due_date' => $task->due_date?->toDateString(),
-            'due_overdue' => $due ? $due->lt($today) : false,
+            'due_overdue' => $task->isOverdue(),
             'milestone' => $milestone,
         ];
     }
@@ -285,7 +284,7 @@ class TaskWorkflowService
                 'permissions' => ['enforcement.record_visit'],
                 'notes' => 'Physically deliver the bill and record the visit outcome.',
                 'due_date' => $task->due_date?->toDateString(),
-                'overdue' => $task->due_date ? Carbon::parse($task->due_date)->startOfDay()->lt(now()->startOfDay()) : false,
+                'overdue' => $task->isOverdue(),
                 'auto_at' => null,
             ];
         }
@@ -354,7 +353,7 @@ class TaskWorkflowService
                 'permissions' => $def['permissions'],
                 'notes' => $def['notes'],
                 'due_date' => $task->due_date?->toDateString(),
-                'overdue' => $task->due_date ? Carbon::parse($task->due_date)->startOfDay()->lt(now()->startOfDay()) : false,
+                'overdue' => $task->isOverdue(),
                 'auto_at' => null,
             ];
         }

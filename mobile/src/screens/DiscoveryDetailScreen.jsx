@@ -3,11 +3,13 @@ import { View, Text, TouchableOpacity, StyleSheet, Alert, ActivityIndicator, Ref
 import { useFocusEffect } from '@react-navigation/native'
 import api from '../api'
 import { useAuth } from '../auth'
+import { fetchOfflineRead } from '../offline'
 import { can, serverMessage, isOnlineRejection } from '../rbac'
 import { theme } from '../theme'
-import { Screen, Card, InfoRow, Badge, Field, Input, Btn, ChipRow, Empty } from '../components'
+import { Screen, Card, InfoRow, Badge, Field, Input, Btn, ChipRow, Empty, OfflineReadStatus } from '../components'
 
 const fd = (v) => (v ? String(v).slice(0, 10) : '—')
+const fm = (v) => (v === null || v === undefined ? '—' : 'US$ ' + Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }))
 
 const coordOf = (d) => {
   if (d?.gps_lat && d?.gps_lng) return `${Number(d.gps_lat).toFixed(5)}, ${Number(d.gps_lng).toFixed(5)}`
@@ -31,16 +33,21 @@ const blobToDataUri = (blob) =>
   })
 
 export default function DiscoveryDetailScreen({ route, navigation }) {
-  const { user } = useAuth()
+  const { user, canUseOfflineCache } = useAuth()
   const { discoveryId } = route.params || {}
   const [d, setD] = useState(null)
   const [err, setErr] = useState('')
+  const [readStatus, setReadStatus] = useState(null)
+  const [syncedAt, setSyncedAt] = useState(null)
   const [refreshing, setRefreshing] = useState(false)
   const [busy, setBusy] = useState('')
   const [panel, setPanel] = useState(null)
-  const [path, setPath] = useState('account')
+  const [decision, setDecision] = useState('')
+  const [officers, setOfficers] = useState(null)
   const [input1, setInput1] = useState('')
   const [input2, setInput2] = useState('')
+  const [input3, setInput3] = useState('')
+  const [input4, setInput4] = useState('')
   const [remarks, setRemarks] = useState('')
   const [photoUris, setPhotoUris] = useState({})
   const [activePhoto, setActivePhoto] = useState(null)
@@ -52,22 +59,47 @@ export default function DiscoveryDetailScreen({ route, navigation }) {
     const next = { ...photoUris }
     await Promise.all(want.map(async (id) => {
       try {
-        const r = await api.get(`/evidence/photos/${id}/download`, { responseType: 'blob' })
+        // Property photographs live on the discovery's evidence route.
+        const url = `/discoveries/${discoveryId}/evidence/${id}/file`
+        const r = await api.get(url, { responseType: 'blob' })
         next[id] = await blobToDataUri(r.data)
       } catch { next[id] = null }
     }))
     setPhotoUris(next)
-  }, [photoUris])
+  }, [photoUris, discoveryId])
 
   const load = useCallback(async () => {
     try {
-      const r = await api.get(`/discoveries/${discoveryId}`)
-      const data = r.data.data
+      const result = await fetchOfflineRead({
+        module: 'discoveries',
+        cacheKey: `${user?.role}:detail:${discoveryId}`,
+        user,
+        allowCache: canUseOfflineCache,
+        request: () => api.get(`/discoveries/${discoveryId}`),
+        select: (response) => response.data?.data,
+        cacheCondition: (record) => String(record?.discovered_by) === String(user?.id),
+      })
+      if (result.status === 'expired') {
+        setD(null)
+        setReadStatus(result.status)
+        setSyncedAt(result.syncedAt)
+        setErr('Offline discovery data has expired. Connect to refresh.')
+        return
+      }
+      const data = result.data
       setD(data)
-      loadPhotos(data?.photos || [])
+      setReadStatus(result.status)
+      setSyncedAt(result.syncedAt)
+      if (result.status !== 'cached') {
+        const evidencePhotos = (data?.evidence || []).filter((e) => e.evidence_type === 'PROPERTY_PHOTO')
+        loadPhotos(evidencePhotos)
+      }
       setErr('')
-    } catch (e) { setErr(serverMessage(e, 'Could not load the discovery record.')) }
-  }, [discoveryId, loadPhotos])
+    } catch (e) {
+      setReadStatus(null)
+      setErr(serverMessage(e, 'Could not load the discovery record.'))
+    }
+  }, [discoveryId, loadPhotos, user, canUseOfflineCache])
 
   useFocusEffect(useCallback(() => { load() }, [load]))
   const refresh = async () => { setRefreshing(true); await load(); setRefreshing(false) }
@@ -75,6 +107,7 @@ export default function DiscoveryDetailScreen({ route, navigation }) {
   if (err && !d) {
     return (
       <Screen>
+        <OfflineReadStatus status={readStatus} syncedAt={syncedAt} />
         <Card style={{ marginTop: 20 }}>
           <Text style={{ color: theme.colors.danger, fontWeight: '700', marginBottom: 8 }}>⚠ Unable to load discovery</Text>
           <Text style={{ color: theme.colors.textMuted, fontSize: 13, marginBottom: 12 }}>{err}</Text>
@@ -88,14 +121,27 @@ export default function DiscoveryDetailScreen({ route, navigation }) {
   }
 
   const status = d.status
-  const creator = d.discovered_by === user?.id
+
+  // Property photographs and documentary evidence are counted from the rows
+  // themselves. The `evidence_photos` table belongs to valuations and visits,
+  // not to a discovery, which is what made this screen report zero
+  // photographs while three PROPERTY_PHOTO rows existed.
+  const allEvidence = d.evidence || []
+  const propertyPhotos = allEvidence
+    .filter((e) => e.evidence_type === 'PROPERTY_PHOTO')
+    .sort((a, b) => (a.sequence_no ?? 0) - (b.sequence_no ?? 0))
+  const supportingEvidence = allEvidence.filter((e) => e.evidence_type !== 'PROPERTY_PHOTO')
 
   const runAction = async (kind, endpoint, payload) => {
+    if (readStatus === 'cached' || readStatus === 'expired') return
     setBusy(kind)
     try {
-      await api.post(`/discoveries/${discoveryId}/${endpoint}`, payload)
-      setPanel(null); setRemarks(''); setInput1(''); setInput2('')
-      Alert.alert('Done', 'Discovery updated.')
+      const r = await api.post(`/discoveries/${discoveryId}/${endpoint}`, payload)
+      setPanel(null); setDecision(''); setInput1(''); setInput2(''); setInput3(''); setInput4(''); setRemarks('')
+      const billed = r?.data?.data?.bill
+      Alert.alert('Done', billed
+        ? `Discovery updated and bill ${billed.document_number} logged for you (${billed.tax_period ?? '—'}).`
+        : 'Discovery updated.')
       load()
     } catch (e) {
       if (isOnlineRejection(e)) Alert.alert('Action failed', serverMessage(e, 'The server rejected the action.'))
@@ -103,24 +149,61 @@ export default function DiscoveryDetailScreen({ route, navigation }) {
     } finally { setBusy('') }
   }
 
-  const openPanel = (key) => {
-    setPanel(key); setPath('account'); setInput1(''); setInput2(''); setRemarks('')
+  const loadOfficers = async () => {
+    if (officers) return
+    try { setOfficers((await api.get('/lookup/supervisors')).data?.data || []) }
+    catch { setOfficers([]) }
+  }
+
+  const openPanel = (key, initialDecision = '') => {
+    if (readStatus === 'cached' || readStatus === 'expired') return
+    setPanel(key); setDecision(initialDecision); setInput1(''); setInput2(''); setInput3(''); setRemarks('')
+    // Registration prefills the tax from the approved assessment: that figure is
+    // authoritative and the API rejects a contradicting entry.
+    setInput4(key === 'registration' && d?.valuation?.annual_tax != null ? String(d.valuation.annual_tax) : '')
+    if (key === 'acct-review' || key === 'val-review') loadOfficers()
   }
 
   const actions = []
-  if (creator && status === 'DISCOVERED' && can(user, 'discovery.create')) actions.push({ key: 'submit', label: 'Submit for Review', endpoint: 'submit', payload: {}, panel: null })
-  if (creator && ['rejected', 'returned'].includes(d.ac_decision) && can(user, 'discovery.create')) actions.push({ key: 'resubmit', label: 'Resubmit after Correction', endpoint: 'resubmit', payload: {}, panel: null })
-  if (can(user, 'discovery.review') && !creator && ['SUBMITTED', 'RESUBMITTED'].includes(status)) actions.push({ key: 'review', label: 'Begin Manager Review', endpoint: 'review', panel: 'remarks' })
-  if (can(user, 'discovery.classify') && !creator && ['UNDER_MANAGER_REVIEW', 'SUBMITTED'].includes(status)) actions.push({ key: 'classify', label: 'Classify & Route', endpoint: 'classify', panel: 'classify' })
-  if (can(user, 'discovery.route_to_account') && !creator && status === 'CLASSIFIED' && d.decision_path === 'account') actions.push({ key: 'route_account', label: 'Route to Account & Record', endpoint: 'route-to-account', payload: {}, panel: null })
-  if (can(user, 'discovery.route_to_valuation') && !creator && status === 'CLASSIFIED' && d.decision_path === 'valuation') actions.push({ key: 'route_val', label: 'Route to Valuation', endpoint: 'route-to-valuation', payload: {}, panel: null })
-  if ((can(user, 'discovery.route_to_account') || can(user, 'discovery.litas_processing')) && status === 'SENT_TO_ACCOUNT') actions.push({ key: 'litas', label: 'Record LITAS Result', endpoint: 'account-processing', panel: 'litas' })
-  if (can(user, 'discovery.approve') && !creator && status === 'PENDING_AC_APPROVAL') actions.push({ key: 'approve', label: 'Approve (AC)', endpoint: 'approve', panel: 'remarks' })
-  if (can(user, 'discovery.reject') && !creator && ['PENDING_AC_APPROVAL', 'VALUATION_MANAGER_REVIEW'].includes(status)) actions.push({ key: 'reject', label: 'Reject', endpoint: 'reject', panel: 'remarks', danger: true })
-  if (can(user, 'discovery.reopen') && ['AC_REJECTED', 'RETURNED_FOR_CORRECTION'].includes(status)) actions.push({ key: 'reopen', label: 'Reopen for Correction', endpoint: 'reopen', payload: {}, panel: null })
+  if (status === 'Draft' && can(user, 'discovery.create')) actions.push({ key: 'submit', label: 'Submit for Classification & Routing', endpoint: 'submit', payload: {}, panel: null })
+  if (status === 'Returned for Correction' && can(user, 'discovery.create')) actions.push({ key: 'resubmit', label: 'Resubmit after Correction', endpoint: 'resubmit', payload: {}, panel: null })
+  if (['Rejected', 'Returned for Correction'].includes(status) && can(user, 'discovery.reopen')) actions.push({ key: 'reopen', label: 'Reopen for Correction', endpoint: 'reopen', payload: {}, panel: null })
+  if (can(user, 'discovery.aarm_review') && ['Awaiting Account Manager Review', 'Approved'].includes(status)) {
+    if (can(user, 'discovery.aarm_approve')) actions.push({ key: 'acct-review', decision: 'approve', label: 'Approve & assign A&R officer', endpoint: 'acct-review', panel: 'acct-review' })
+    if (can(user, 'discovery.refer_to_valuation')) actions.push({ key: 'acct-review', decision: 'refer_to_valuation', label: 'Refer to Valuation', endpoint: 'acct-review', panel: 'acct-review' })
+    actions.push({ key: 'acct-review', decision: 'return', label: 'Return for correction', endpoint: 'acct-review', panel: 'acct-review' })
+    actions.push({ key: 'acct-review', decision: 'reject', label: 'Reject', endpoint: 'acct-review', panel: 'acct-review', danger: true })
+  }
+  if (can(user, 'discovery.route_to_valuation') && ['Awaiting Valuation', 'Referred to Valuation'].includes(status)) actions.push({ key: 'val-review', label: 'Valuation Manager Decision', endpoint: 'val-review', panel: 'val-review' })
+  if (status === 'Assigned to Account & Record' && (can(user, 'discovery.property_registration') || can(user, 'discovery.aarm_review'))) actions.push({ key: 'registration', label: 'Record Processing Result', endpoint: 'account-processing', panel: 'registration' })
+  if (status === 'Registered' && (can(user, 'discovery.property_registration') || can(user, 'discovery.review') || can(user, 'discovery.aarm_review'))) actions.push({ key: 'complete', label: 'Complete Discovery', endpoint: 'complete', payload: {}, panel: null })
+
+  const acctOptions = [...(can(user, 'discovery.aarm_approve') ? ['approve'] : []), ...(can(user, 'discovery.refer_to_valuation') ? ['refer_to_valuation'] : []), 'return', 'reject']
+
+  const officerPick = () => (
+    <View style={{ paddingHorizontal: 16, marginBottom: 14 }}>
+      <Text style={s.panelSub}>
+        {officers === null ? 'Loading active staff…'
+          : officers.length === 0 ? 'No staff found to assign. Contact an administrator.'
+          : 'Select the officer to assign (eligibility is validated by the server).'}
+      </Text>
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+        {officers === null ? <ActivityIndicator color={theme.colors.primary} /> : officers.map((o) => {
+          const active = String(o.id) === input1
+          return (
+            <TouchableOpacity key={o.id} hitSlop={3} onPress={() => setInput1(active ? '' : String(o.id))}
+              style={[s.officerChip, active && { backgroundColor: theme.colors.primary, borderColor: theme.colors.primary }]}>
+              <Text style={[s.officerChipText, active && { color: '#fff' }]}>{o.full_name || `#${o.id}`}</Text>
+            </TouchableOpacity>
+          )
+        })}
+      </View>
+    </View>
+  )
 
   return (
     <Screen scroll refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={theme.colors.primary} />}>
+      <OfflineReadStatus status={readStatus} syncedAt={syncedAt} />
       <Card>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 }}>
           <Text style={s.ref}>{d.discovery_reference}</Text>
@@ -128,7 +211,7 @@ export default function DiscoveryDetailScreen({ route, navigation }) {
         </View>
         {d.decision_path ? <InfoRow label="Decision path" value={d.decision_path} /> : null}
         <InfoRow label="Discovery date" value={fd(d.discovery_date)} />
-        <InfoRow label="Recorded by" value={d.discoverer?.full_name || '—'} />
+        <InfoRow label="Recorded by" value={d.discovered_by || '—'} />
         <InfoRow label="Created" value={d.created_at ? new Date(d.created_at).toLocaleDateString() : '—'} />
       </Card>
 
@@ -156,10 +239,21 @@ export default function DiscoveryDetailScreen({ route, navigation }) {
         <InfoRow label="TIN" value={d.tin || '—'} />
       </Card>
 
+      <Text style={s.sectionLabel}>VALUE DECLARATION</Text>
+      <Card>
+        <InfoRow label="Declaration" value={d.value_declaration_label || d.value_declaration_type || 'Not declared'} bold />
+        <InfoRow label="Declared value" value={fm(d.declared_value)} />
+        {d.declared_assessed_value != null ? <InfoRow label="Declared / assessed" value={fm(d.declared_assessed_value)} /> : null}
+        {d.documentary_value != null ? <InfoRow label="Documentary value" value={fm(d.documentary_value)} /> : null}
+        {d.official_assessed_value != null
+          ? <InfoRow label="Official assessed value" value={fm(d.official_assessed_value)} bold />
+          : <InfoRow label="Official assessed value" value="Not yet assessed" />}
+      </Card>
+
       <Text style={s.sectionLabel}>SYSTEM REFERENCES</Text>
       <Card>
-        <InfoRow label="Property ID (LITAS)" value={d.property_id || '—'} bold />
-        <InfoRow label="Document # (LITAS)" value={d.document_number || '—'} bold />
+        <InfoRow label="Property ID (source)" value={d.property_id || '—'} bold />
+        <InfoRow label="Document # (source)" value={d.document_number || '—'} bold />
         {d.processed_by ? <InfoRow label="Processed by" value={d.processed_by} /> : null}
         {d.processed_at ? <InfoRow label="Processed at" value={fd(d.processed_at)} /> : null}
       </Card>
@@ -168,6 +262,13 @@ export default function DiscoveryDetailScreen({ route, navigation }) {
       <Card>
         <InfoRow label="Coordinates" value={coordOf(d)} />
         {d.gps_accuracy != null ? <InfoRow label="Accuracy" value={`±${d.gps_accuracy}m`} /> : null}
+        {/* A field-collected coordinate is a candidate until it is certified. */}
+        <View style={{ marginTop: 6 }}>
+          <Badge
+            status={d.gps_verified === 'yes' ? 'Registered' : 'Returned for Correction'}
+            label={d.gps_verified === 'yes' ? 'Official Property GPS' : 'Official GPS Not Yet Certified'}
+          />
+        </View>
       </Card>
 
       {d.remarks ? (
@@ -189,19 +290,63 @@ export default function DiscoveryDetailScreen({ route, navigation }) {
         </>
       )}
 
-      {d.photos && d.photos.length > 0 && (
+      {propertyPhotos.length > 0 && (
         <>
-          <Text style={s.sectionLabel}>EVIDENCE PHOTOS ({d.photos.length})</Text>
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, paddingHorizontal: 16 }}>
-            {d.photos.map((p) => (
+          <Text style={s.sectionLabel}>PROPERTY PHOTOS ({propertyPhotos.length})</Text>
+          <View style={{ paddingHorizontal: 16 }}>
+            {/* The property photograph is the subject, so it leads. */}
+            <TouchableOpacity
+              onPress={() => setActivePhoto(propertyPhotos[0])}
+              accessibilityRole="image"
+              accessibilityLabel={`Property photo ${propertyPhotos[0].sequence_no ?? ''}`}
+            >
+              {photoUris[propertyPhotos[0].id]
+                ? <Image
+                    source={{ uri: photoUris[propertyPhotos[0].id] }}
+                    style={s.heroPhoto}
+                    resizeMode="cover"
+                  />
+                : <View style={[s.heroPhoto, { alignItems: 'center', justifyContent: 'center' }]}>
+                    {readStatus === 'cached'
+                      ? <Text style={{ color: theme.colors.textMuted }}>Photo requires a connection.</Text>
+                      : <ActivityIndicator color={theme.colors.primary} />}
+                  </View>}
+            </TouchableOpacity>
+            {propertyPhotos[0].gps_latitude != null && (
+              <Text style={s.photoMeta}>
+                📍 {Number(propertyPhotos[0].gps_latitude).toFixed(6)}, {Number(propertyPhotos[0].gps_longitude).toFixed(6)}
+              </Text>
+            )}
+          </View>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, paddingHorizontal: 16, marginTop: 10 }}>
+            {propertyPhotos.map((p) => (
               <TouchableOpacity key={p.id} style={s.thumbWrap} onPress={() => setActivePhoto(p)}>
                 {photoUris[p.id]
                   ? <Image source={{ uri: photoUris[p.id] }} style={s.thumb} />
-                  : <View style={[s.thumb, { alignItems: 'center', justifyContent: 'center' }]}><ActivityIndicator color={theme.colors.primary} /></View>}
-                <Text style={s.thumbCap} numberOfLines={1}>{p.photo_reference}</Text>
+                  : <View style={[s.thumb, { alignItems: 'center', justifyContent: 'center' }]}>
+                      {readStatus === 'cached'
+                        ? <Text style={{ color: theme.colors.textMuted, fontSize: 10, textAlign: 'center' }}>Online only</Text>
+                        : <ActivityIndicator color={theme.colors.primary} />}
+                    </View>}
+                <Text style={s.thumbCap} numberOfLines={1}>Photo {p.sequence_no ?? '—'}</Text>
               </TouchableOpacity>
             ))}
           </View>
+        </>
+      )}
+
+      {supportingEvidence.length > 0 && (
+        <>
+          <Text style={s.sectionLabel}>SUPPORTING EVIDENCE ({supportingEvidence.length})</Text>
+          <Card>
+            {supportingEvidence.map((e) => (
+              <InfoRow
+                key={e.id}
+                label={e.evidence_type === 'OWNERSHIP_DOCUMENT' ? 'Ownership / deed' : e.evidence_type}
+                value={`${e.original_name || '—'}${e.captured_at ? ` · ${fd(e.captured_at)}` : ''}`}
+              />
+            ))}
+          </Card>
         </>
       )}
 
@@ -217,75 +362,95 @@ export default function DiscoveryDetailScreen({ route, navigation }) {
         <Card><Text style={{ color: theme.colors.textMuted, fontSize: 13 }}>No history recorded.</Text></Card>
       )}
 
-      {actions.length > 0 && (
+      {actions.length > 0 && readStatus !== 'cached' && readStatus !== 'expired' && (
         <>
           <Text style={s.sectionLabel}>ACTIONS</Text>
           <View style={{ paddingHorizontal: 16, gap: 10 }}>
             {actions.map((a) => (
               <Btn
-                key={a.key}
+                key={`${a.key}-${a.decision || 'x'}`}
                 tone={a.danger ? 'danger' : 'primary'}
                 label={a.label}
                 disabled={busy !== ''}
-                onPress={() => (a.panel ? openPanel(a.key) : runAction(a.key, a.endpoint, a.payload))}
+                onPress={() => (a.panel ? openPanel(a.key, a.decision) : runAction(a.key, a.endpoint, a.payload))}
               />
             ))}
           </View>
         </>
       )}
 
-      {panel === 'review' || panel === 'approve' || panel === 'reject' ? (
-        <Card style={{ marginTop: 14 }}>
-          <Text style={s.panelTitle}>Remarks (required for the record)</Text>
-          <Field label="Remarks">
-            <Input value={remarks} onChangeText={setRemarks} multiline style={{ minHeight: 72, textAlignVertical: 'top' }} placeholder="Reason / instructions…" />
-          </Field>
-          <View style={{ flexDirection: 'row', gap: 8 }}>
-            <Btn tone="ghost" label="Cancel" style={{ flex: 1 }} onPress={() => setPanel(null)} disabled={busy !== ''} />
-            <Btn label="Confirm" style={{ flex: 1 }} onPress={() => runAction(panel, panel, { remarks: remarks.trim() || undefined })} loading={busy === panel} />
-          </View>
-        </Card>
-      ) : null}
+  {readStatus !== 'cached' && readStatus !== 'expired' && panel === 'acct-review' && (
+    <Card style={{ marginTop: 14 }}>
+      <Text style={s.panelTitle}>Account &amp; Record Manager review</Text>
+      <Text style={s.panelSub}>Approve and assign an officer, return for correction, refer to valuation, or reject.</Text>
+      <View style={{ marginBottom: 10, paddingHorizontal: 16 }}>
+        <ChipRow options={acctOptions} value={decision} onChange={setDecision}
+          colors={{ approve: theme.colors.success, refer_to_valuation: theme.colors.primary, return: '#D97706', reject: theme.colors.danger }} />
+      </View>
+      {decision === 'approve' && officerPick()}
+      <Field label="Remarks">
+        <Input value={remarks} onChangeText={setRemarks} multiline style={{ minHeight: 64, textAlignVertical: 'top' }} placeholder="Decision note…" />
+      </Field>
+      <View style={{ flexDirection: 'row', gap: 8 }}>
+        <Btn tone="ghost" label="Cancel" style={{ flex: 1 }} onPress={() => setPanel(null)} disabled={busy !== ''} />
+        <Btn label="Confirm" style={{ flex: 1 }} loading={busy === 'acct-review'}
+          disabled={!decision || (decision === 'approve' && !input1)}
+          onPress={() => runAction('acct-review', 'acct-review', { decision, officer_id: input1 ? Number(input1) : undefined, remarks: remarks.trim() || undefined })} />
+      </View>
+    </Card>
+  )}
 
-      {panel === 'classify' && (
-        <Card style={{ marginTop: 14 }}>
-          <Text style={s.panelTitle}>Classification & routing path</Text>
-          <Text style={s.panelSub}>Choose where the property should go next.</Text>
-          <View style={{ marginBottom: 10, paddingHorizontal: 16 }}>
-            <ChipRow options={['account', 'valuation']} value={path} onChange={setPath} />
-          </View>
-          <Field label="Classification decision">
-            <Input value={input1} onChangeText={setInput1} placeholder="e.g. Two-storey commercial property" />
-          </Field>
-          <Field label="Manager remarks">
-            <Input value={remarks} onChangeText={setRemarks} multiline style={{ minHeight: 60, textAlignVertical: 'top' }} placeholder="Optional…" />
-          </Field>
-          <View style={{ flexDirection: 'row', gap: 8 }}>
-            <Btn tone="ghost" label="Cancel" style={{ flex: 1 }} onPress={() => setPanel(null)} disabled={busy !== ''} />
-            <Btn label="Classify" style={{ flex: 1 }} onPress={() => runAction('classify', 'classify', { decision_path: path, classification_decision: input1.trim() || undefined, manager_remarks: remarks.trim() || undefined })} loading={busy === 'classify'} />
-          </View>
-        </Card>
-      )}
+  {readStatus !== 'cached' && readStatus !== 'expired' && panel === 'val-review' && (
+    <Card style={{ marginTop: 14 }}>
+      <Text style={s.panelTitle}>Valuation Manager decision</Text>
+      <Text style={s.panelSub}>Assign to a Valuation Officer, conduct it yourself, or return for correction.</Text>
+      <View style={{ marginBottom: 10, paddingHorizontal: 16 }}>
+        {/* "Conduct personally" is shown only where the caller can begin and submit
+            the assessment (valuation.submit) — routing permission alone would hand
+            them work the API refuses. The server enforces the same rule. */}
+        <ChipRow options={can(user, 'valuation.submit') ? ['assign', 'self', 'return'] : ['assign', 'return']} value={decision} onChange={setDecision}
+          colors={{ assign: theme.colors.primary, self: '#2563EB', return: '#D97706' }} />
+      </View>
+      {decision === 'assign' && officerPick()}
+      <Field label="Remarks">
+        <Input value={remarks} onChangeText={setRemarks} multiline style={{ minHeight: 64, textAlignVertical: 'top' }} placeholder="Note to the valuation officer / discovering officer…" />
+      </Field>
+      <View style={{ flexDirection: 'row', gap: 8 }}>
+        <Btn tone="ghost" label="Cancel" style={{ flex: 1 }} onPress={() => setPanel(null)} disabled={busy !== ''} />
+        <Btn label="Confirm" style={{ flex: 1 }} loading={busy === 'val-review'}
+          disabled={!decision || (decision === 'assign' && !input1)}
+          onPress={() => runAction('val-review', 'val-review', { decision, officer_id: decision === 'assign' ? Number(input1) : undefined, remarks: remarks.trim() || undefined })} />
+      </View>
+    </Card>
+  )}
 
-      {panel === 'litas' && (
-        <Card style={{ marginTop: 14 }}>
-          <Text style={s.panelTitle}>LITAS processing result</Text>
-          <Text style={s.panelSub}>Confirm the property was created in the source system and record its identifiers.</Text>
-          <Field label="Property ID (from LITAS)">
-            <Input value={input1} onChangeText={setInput1} placeholder="LITAS property id" />
-          </Field>
-          <Field label="Document # (from LITAS)">
-            <Input value={input2} onChangeText={setInput2} placeholder="LITAS document number" />
-          </Field>
-          <Field label="Remarks">
-            <Input value={remarks} onChangeText={setRemarks} multiline style={{ minHeight: 60, textAlignVertical: 'top' }} placeholder="Optional…" />
-          </Field>
-          <View style={{ flexDirection: 'row', gap: 8 }}>
-            <Btn tone="ghost" label="Cancel" style={{ flex: 1 }} onPress={() => setPanel(null)} disabled={busy !== ''} />
-            <Btn label="Record" style={{ flex: 1 }} onPress={() => runAction('litas', 'account-processing', { property_id: input1.trim() || undefined, document_number: input2.trim() || undefined, remarks: remarks.trim() || undefined })} loading={busy === 'litas'} />
-          </View>
-        </Card>
-      )}
+  {readStatus !== 'cached' && readStatus !== 'expired' && panel === 'registration' && (
+    <Card style={{ marginTop: 14 }}>
+      <Text style={s.panelTitle}>Property processing result</Text>
+      <Text style={s.panelSub}>Confirming completes your Account &amp; Record Processing task and updates the property bill record (TIN {d?.tin || '—'} · {d?.owner_name || 'N/A'}). An existing bill for this TIN and tax period is updated; otherwise a new one is created.</Text>
+      <Field label="Property ID (from source)">
+        <Input value={input1} onChangeText={setInput1} placeholder="Property ID (source)" />
+      </Field>
+      <Field label="Document # (from source)">
+        <Input value={input2} onChangeText={setInput2} placeholder="Document # (source)" />
+      </Field>
+      <Field label="Tax period (e.g. 2026)">
+        <Input value={input3} onChangeText={setInput3} placeholder="Bill-Log tax period" />
+      </Field>
+      <Field label="Tax amount (US$, from source)">
+        <Input value={input4} onChangeText={setInput4} placeholder="e.g. 1250.00" keyboardType="decimal-pad" />
+      </Field>
+      <Field label="Remarks">
+        <Input value={remarks} onChangeText={setRemarks} multiline style={{ minHeight: 60, textAlignVertical: 'top' }} placeholder="Optional…" />
+      </Field>
+      <View style={{ flexDirection: 'row', gap: 8 }}>
+        <Btn tone="ghost" label="Cancel" style={{ flex: 1 }} onPress={() => setPanel(null)} disabled={busy !== ''} />
+        <Btn label="Confirm processing" style={{ flex: 1 }} loading={busy === 'registration'}
+          disabled={busy !== '' || !input1.trim() || !input2.trim() || !input3.trim() || !input4.trim() || !(Number(input4) >= 0)}
+          onPress={() => runAction('registration', 'account-processing', { property_id: input1.trim(), document_number: input2.trim(), property_tax_amount: Number(input4), tax_period: input3.trim(), remarks: remarks.trim() || undefined })} />
+      </View>
+    </Card>
+  )}
 
       <Modal visible={!!activePhoto} transparent animationType="fade" onRequestClose={() => setActivePhoto(null)}>
         <View style={s.lightbox}>
@@ -309,9 +474,13 @@ const s = StyleSheet.create({
   engMeta: { fontSize: 11, color: theme.colors.textLight, marginTop: 3 },
   panelTitle: { fontSize: 14, fontWeight: '800', color: theme.colors.navy, marginBottom: 4 },
   panelSub: { fontSize: 12, color: theme.colors.textMuted, marginBottom: 12 },
+  officerChip: { borderRadius: 20, paddingHorizontal: 14, paddingVertical: 9, minHeight: 36, alignItems: 'center', justifyContent: 'center', borderWidth: 1.5, borderColor: theme.colors.border, backgroundColor: '#fff' },
+  officerChipText: { fontSize: 12, fontWeight: '700', color: theme.colors.navy },
   thumbWrap: { width: 96, marginBottom: 8 },
   thumb: { width: 96, height: 96, borderRadius: 10, backgroundColor: theme.colors.surface || '#eef1f5' },
   thumbCap: { fontSize: 10, color: theme.colors.textMuted, marginTop: 4, width: 96 },
+  heroPhoto: { width: '100%', height: 220, borderRadius: 12, backgroundColor: theme.colors.surface || '#eef1f5' },
+  photoMeta: { fontSize: 11, color: theme.colors.textMuted, marginTop: 6 },
   lightbox: { flex: 1, backgroundColor: 'rgba(0,0,0,0.93)', alignItems: 'center', justifyContent: 'center', padding: 24 },
   lightboxImg: { width: '100%', height: '70%' },
   lightboxCap: { color: '#fff', fontSize: 13, marginTop: 14, textAlign: 'center' },

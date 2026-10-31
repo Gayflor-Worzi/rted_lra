@@ -7,6 +7,7 @@ import { useAuth } from '../auth'
 import { can, serverMessage, isOnlineRejection } from '../rbac'
 import { theme } from '../theme'
 import { Screen, Field, Btn, Input, Card, Empty } from '../components'
+import { photoToUpload } from '../image'
 
 export default function ReceiptScreen({ route, navigation }) {
   const { bill } = route.params || {}
@@ -40,15 +41,21 @@ export default function ReceiptScreen({ route, navigation }) {
           : 'Camera permission was denied. Enable it in your device settings, then try again.'
       )
     }
-    const result = await ImagePicker.launchCameraAsync({ quality: 0.7 })
-    if (!result.canceled) setPhoto(result.assets[0].uri)
+    const result = await ImagePicker.launchCameraAsync({ quality: 0.6 })
+    if (!result.canceled) {
+      const a = result.assets[0]
+      setPhoto({ uri: a.uri, fromCamera: true })
+    }
   }
 
   const uploadPhoto = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync()
     if (status !== 'granted') return Alert.alert('Permission', 'Gallery access required to attach the receipt photo.')
-    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: 'images', quality: 0.7 })
-    if (!result.canceled) setPhoto(result.assets[0].uri)
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: 'images', quality: 0.6 })
+    if (!result.canceled) {
+      const a = result.assets[0]
+      setPhoto({ uri: a.uri, fromCamera: false })
+    }
   }
 
   const submit = async () => {
@@ -67,7 +74,28 @@ export default function ReceiptScreen({ route, navigation }) {
       period: period.trim() || undefined,
       payment_date: payDate || undefined,
       receipt_number: receiptNo.trim(),
-      receipt_photo: photo,
+      receipt_photo: await photoToUpload(photo),
+    }
+    const checkDup = () =>
+      api.post('/payments/duplicate-check', {
+        receipt_number: receiptNo.trim(),
+        amount: parseFloat(amount),
+        period: period.trim() || undefined,
+        bill_id: bill?.id ?? undefined,
+        property_id: propertyId.trim(),
+      })
+    // Best-effort pre-submission duplicate check. The server is the final
+    // authority and re-checks atomically on submission, so a pre-check failure
+    // (offline, timeout, API hiccup) never blocks — the submission itself (or
+    // its offline queue) decides. Only a confirmed hard block stops the claim.
+    try {
+      const dup = await checkDup()
+      if (dup?.data?.hard_block) {
+        setBusy(false)
+        return Alert.alert('Duplicate Receipt', dup.data.block_reason || 'This receipt has already been used for another payment claim.')
+      }
+    } catch (e) {
+      // continue — the server re-checks on submission
     }
     try {
       await api.post('/enforcement/submit-receipt', payload)
@@ -77,7 +105,7 @@ export default function ReceiptScreen({ route, navigation }) {
         Alert.alert('Receipt not submitted', serverMessage(e, 'The server rejected the receipt claim.'))
       } else {
         await queueAndFlush('receipt', payload)
-        Alert.alert('Saved offline', 'Receipt queued — it will sync automatically.', [{ text: 'OK', onPress: () => navigation.goBack() }])
+        Alert.alert('Saved offline', 'Pending Synchronization — the receipt will be verified by the Account & Records section once the device reconnects.', [{ text: 'OK', onPress: () => navigation.goBack() }])
       }
     } finally { setBusy(false) }
   }
@@ -130,7 +158,7 @@ export default function ReceiptScreen({ route, navigation }) {
           <Btn tone={photo ? 'success' : 'ghost'} label="📷 Take photo" onPress={takePhoto} style={{ flex: 1 }} />
           <Btn tone="outline" label="⬆ Upload" onPress={uploadPhoto} style={{ flex: 1 }} />
         </View>
-        {photo && <Image source={{ uri: photo }} style={{ width: '100%', height: 170, borderRadius: 12, marginTop: 12 }} resizeMode="cover" />}
+        {photo && <Image source={{ uri: photo.uri }} style={{ width: '100%', height: 170, borderRadius: 12, marginTop: 12 }} resizeMode="cover" />}
       </Card>
 
       <View style={{ paddingHorizontal: 16, marginTop: 6 }}>

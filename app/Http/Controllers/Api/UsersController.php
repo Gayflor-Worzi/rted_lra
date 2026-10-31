@@ -4,7 +4,9 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Role;
+use App\Models\Task;
 use App\Models\User;
+use App\Services\AssignmentEligibilityService;
 use App\Services\AuditService;
 use App\Services\EffectivePermissionResolver;
 use Illuminate\Http\Request;
@@ -71,12 +73,79 @@ class UsersController extends Controller
         return response()->json(['data' => $rows]);
     }
 
+    /**
+     * Active Enforcement Officers for assignment/recipient pickers on forms
+     * (bill logging, enforcement). Available to any signed-in staff member so
+     * the dropdown works for Account & Records Officers without staff.view.
+     * The full ACTIVE officer roster is returned: bill loggers must be able to
+     * hand bills to officers in any section, so scope is intentionally not
+     * applied here.
+     *
+     * Privacy (G0.2 — minimum staff info for the assigned task): personal phone
+     * is never exposed; email is only returned to staff.view holders.
+     */
+    public function enforcementOfficers(Request $request)
+    {
+        $rows = User::query()->with(['role', 'section'])
+            ->where('is_active', true)
+            ->whereHas('role', fn ($r) => $r->where('name', 'Enforcement Officer'))
+            ->orderBy('full_name')
+            ->get(['id', 'full_name', 'staff_id', 'email', 'role_id', 'section_id']);
+
+        $data = $rows->map(fn ($u) => array_filter([
+            'id' => $u->id,
+            'full_name' => $u->full_name,
+            'staff_id' => $u->staff_id,
+            'role' => $u->role?->name,
+            'section' => $u->section?->name,
+            'email' => $request->user()->canPermission('staff.view') ? $u->email : null,
+        ]));
+
+        return response()->json(['data' => $data]);
+    }
+
+    /**
+     * Staff who may actually be assigned a task of the given type.
+     *
+     * The assignment dropdowns used to be filled from the staff.view-gated
+     * /users list, which broke them twice over: a manager-less user such as an
+     * Account & Records Officer gets a 403 there, and the payload exposes
+     * `role` as a string, so a client filtering on `role.name` silently matched
+     * nobody and the picker rendered empty. Eligibility is decided here by the
+     * same AssignmentEligibilityService the mutation endpoints enforce, so a
+     * person who cannot be assigned is never offered, and the returned role is
+     * always a string for display.
+     */
+    public function assignable(Request $request)
+    {
+        $data = $request->validate([
+            'task_type' => ['required', 'string', Rule::in(AssignmentEligibilityService::assignableTaskTypes())],
+        ]);
+
+        $rows = User::query()->with(['role', 'section'])
+            ->where('is_active', true)
+            ->orderBy('full_name')
+            ->get(['id', 'full_name', 'staff_id', 'is_active', 'role_id', 'section_id'])
+            ->filter(fn (User $u) => AssignmentEligibilityService::canExecuteTaskType($u, $data['task_type']))
+            ->map(fn (User $u) => [
+                'id' => $u->id,
+                'full_name' => $u->full_name,
+                'staff_id' => $u->staff_id,
+                'role' => $u->role?->name,
+                'section' => $u->section?->name,
+            ])
+            ->values();
+
+        return response()->json(['data' => $rows]);
+    }
+
     public function store(Request $request)
     {
         abort_unless($request->user()->canPermission('staff.create'), 403, 'Missing permission: staff.create');
         $data = $request->validate([
             'full_name' => 'required|string|max:255',
             'email' => ['required', 'email', 'max:255', Rule::unique('users', 'email')],
+            'phone' => ['nullable', 'string', 'max:40'],
             'password' => 'required|string|min:8',
             'section_id' => ['required', 'integer', Rule::exists('sections', 'id')],
             'role_id' => ['required', 'integer', Rule::exists('roles', 'id')],
@@ -112,12 +181,15 @@ class UsersController extends Controller
     {
         abort_unless($request->user()->canPermission('staff.edit'), 403, 'Missing permission: staff.edit');
 
+        $this->assertTargetInScope($request->user(), $user);
+
         $data = $request->validate([
             'full_name' => 'sometimes|string|max:255',
             'section_id' => ['sometimes', 'integer', Rule::exists('sections', 'id')],
             'role_id' => ['sometimes', 'integer', Rule::exists('roles', 'id')],
             'supervisor_id' => ['nullable', 'integer', Rule::exists('users', 'id')],
             'email' => ['sometimes', 'email', 'max:255', Rule::unique('users', 'email')->ignore($user->id)],
+            'phone' => ['sometimes', 'nullable', 'string', 'max:40'],
             'staff_id' => ['sometimes', 'nullable', 'string', 'max:40', Rule::unique('users', 'staff_id')->ignore($user->id)],
             'password' => ['sometimes', 'string', 'min:8'],
         ]);
@@ -148,6 +220,8 @@ class UsersController extends Controller
     {
         abort_unless($request->user()->canPermission('staff.activate'), 403, 'Missing permission: staff.activate');
 
+        $this->assertTargetInScope($request->user(), $user);
+
         $data = $request->validate([
             'is_active' => 'required|boolean',
         ]);
@@ -157,6 +231,13 @@ class UsersController extends Controller
         }
 
         $user->update(['is_active' => $data['is_active']]);
+
+        // Deactivation must take effect immediately: purge live sessions so no
+        // previously-issued token can keep using the API (EnsureActiveUser is
+        // the belt-and-suspenders guard for anything that slips through).
+        if (! $data['is_active']) {
+            $user->tokens()->delete();
+        }
 
         $this->audit->record($user, 'user.'.($data['is_active'] ? 'activated' : 'deactivated'), $request->user()->id, [
             'is_active' => ! $data['is_active'],
@@ -283,6 +364,20 @@ class UsersController extends Controller
      * Guard role assignment: System Administrator may only be granted by another
      * System Administrator; other creators are limited to operational roles.
      */
+    /**
+     * Staff-management actions (edit/activate) are only valid on staff within
+     * the actor's own data scope — a section/team-scoped staff.editor cannot
+     * quietly modify accounts outside their authority.
+     */
+    private function assertTargetInScope(User $actor, User $target): void
+    {
+        if (in_array($actor->scopeLevel(), ['own', 'team', 'section'], true)) {
+            $scoped = User::query()->where('id', $target->id);
+            $actor->applyScope($scoped, 'id');
+            abort_unless($scoped->exists(), 403, 'Staff member outside your data scope.');
+        }
+    }
+
     private function assertCanAssignRole(User $actor, ?Role $role): void
     {
         abort_unless($role, 422, 'Role not found.');
@@ -314,6 +409,7 @@ class UsersController extends Controller
             'staff_id' => $user->staff_id,
             'full_name' => $user->full_name,
             'email' => $user->email,
+            'phone' => $user->phone,
             'is_active' => $user->is_active,
             'must_reset_password' => $user->must_reset_password,
             'last_login_at' => $user->last_login_at?->toISOString(),

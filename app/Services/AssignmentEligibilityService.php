@@ -27,39 +27,54 @@ class AssignmentEligibilityService
     private const TYPE_MAP = [
         Task::TYPE_BILL_DELIVERY => [
             'permissions' => ['enforcement.bill_delivery'],
-            'sections'    => ['ENF'],
+            'sections' => ['ENF'],
+            'view_permissions' => ['enforcement.view_assignments'],
         ],
         Task::TYPE_ENFORCEMENT_VISIT => [
             'permissions' => ['enforcement.visit'],
-            'sections'    => ['ENF'],
+            'sections' => ['ENF'],
+            'view_permissions' => ['enforcement.view_assignments'],
         ],
         Task::TYPE_PAYMENT_FOLLOWUP => [
             'permissions' => ['enforcement.payment_followup'],
-            'sections'    => ['ENF'],
+            'sections' => ['ENF'],
+            'view_permissions' => ['enforcement.view_assignments'],
         ],
         Task::TYPE_PAYMENT_VERIFICATION => [
             'permissions' => ['payments.verify'],
-            'sections'    => ['ACCT'],
+            'sections' => ['ACCT'],
         ],
         Task::TYPE_VALUATION => [
-            'permissions' => ['valuation.prepare'],
-            'sections'    => ['VAL'],
+            'permissions' => ['valuation.prepare', 'valuation.create'],
+            'sections' => ['VAL'],
         ],
         Task::TYPE_VALUATION_REVIEW => [
             'permissions' => ['valuation.review'],
-            'sections'    => ['VAL'],
+            'sections' => ['VAL'],
+        ],
+        Task::TYPE_VALUATION_MANAGER_REVIEW => [
+            'permissions' => ['valuation.review'],
+            'sections' => ['VAL'],
         ],
         Task::TYPE_AC_APPROVAL => [
             'permissions' => ['valuation.approve'],
-            'sections'    => ['VAL', 'MGT'],
+            'sections' => ['VAL', 'MGT'],
+        ],
+        Task::TYPE_DISCOVERY_REVIEW => [
+            'permissions' => ['discovery.aarm_review', 'discovery.review'],
+            'sections' => ['ACCT', 'VAL'],
+        ],
+        Task::TYPE_ACCOUNT_MANAGER_REVIEW => [
+            'permissions' => ['discovery.aarm_review', 'valuation.account_review'],
+            'sections' => ['ACCT'],
         ],
         Task::TYPE_ME_QUERY => [
             'permissions' => ['me.respond'],
-            'sections'    => ['ENF', 'MGT'],
+            'sections' => ['ENF', 'MGT'],
         ],
-        Task::TYPE_LITAS_PROCESSING => [
-            'permissions' => ['valuation.litas_processing', 'discovery.litas_processing'],
-            'sections'    => ['ACCT', 'VAL'],
+        Task::TYPE_ACCOUNT_PROCESSING => [
+            'permissions' => ['valuation.property_registration', 'discovery.property_registration'],
+            'sections' => ['ACCT', 'VAL'],
         ],
         Task::TYPE_OTHER => null,
     ];
@@ -67,7 +82,7 @@ class AssignmentEligibilityService
     /**
      * Task type requirements (permissions + sections) or null when unrestricted.
      *
-     * @return array{permissions: string[], sections: string[]}|null
+     * @return array{permissions: string[], sections: string[], view_permissions?: string[]}|null
      */
     public static function requirementsFor(string $taskType): ?array
     {
@@ -98,6 +113,19 @@ class AssignmentEligibilityService
 
         if ($sectionCode && in_array($sectionCode, $reqs['sections'], true)) {
             return true;
+        }
+
+        if ($reqs['view_permissions'] ?? []) {
+            // A view-permission credit is exercisable only by roles chartered to
+            // browse the type's workspace (e.g. the Account Manager reading the
+            // enforcement register). Other holders of the permission — such as
+            // the Assistant Commissioner — stay excluded from the surface.
+            $workspace = SectionWorkspaceService::workspaceForType($taskType);
+            if ($workspace === null || SectionWorkspaceService::isWorkspaceViewer($user, $workspace)) {
+                if ($user->hasAnyPermission($reqs['view_permissions'])) {
+                    return true;
+                }
+            }
         }
 
         return $user->hasAnyPermission($reqs['permissions']);
@@ -135,6 +163,16 @@ class AssignmentEligibilityService
     }
 
     /**
+     * Task types that can be offered in an assignment picker.
+     *
+     * TYPE_OTHER is unrestricted and so is never a meaningful choice to offer.
+     */
+    public static function assignableTaskTypes(): array
+    {
+        return array_values(array_diff(array_keys(self::TYPE_MAP), [Task::TYPE_OTHER]));
+    }
+
+    /**
      * Human-readable eligibility list for a task type (for error messages).
      */
     public static function requirementsLabel(string $taskType): string
@@ -152,7 +190,7 @@ class AssignmentEligibilityService
      * All task types the user is VIEW-eligible to see (used for list filters).
      * Division/system scopes see everything; other scopes are restricted.
      *
-     * @return string[]|null  null = unrestricted (view all)
+     * @return string[]|null null = unrestricted (view all)
      */
     public static function viewableTypes(User $user): ?array
     {

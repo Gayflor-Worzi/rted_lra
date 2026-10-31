@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\GeneratesInternalReference;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -9,6 +10,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 
 class EnforcementVisit extends Model
 {
+    use GeneratesInternalReference;
     use SoftDeletes;
 
     protected $table = 'enforcement_visits';
@@ -16,8 +18,22 @@ class EnforcementVisit extends Model
     // Delivery outcome labels — single source of truth. Analytics, dashboards,
     // staff targets and reports all read these exact strings (title-case).
     public const DELIVERY_DELIVERED = 'Delivered';
+
     public const DELIVERY_RETURNED = 'Returned';
+
     public const DELIVERY_OUT_FOR_DELIVERY = 'Out for Delivery';
+
+    public const DELIVERY_UNDELIVERED = 'Undelivered';
+
+    public const DELIVERY_NOT_MAILABLE = 'Not Mailable';
+
+    public const DELIVERY_STATUSES = [
+        self::DELIVERY_DELIVERED,
+        self::DELIVERY_OUT_FOR_DELIVERY,
+        self::DELIVERY_RETURNED,
+        self::DELIVERY_UNDELIVERED,
+        self::DELIVERY_NOT_MAILABLE,
+    ];
 
     protected $fillable = [
         'visit_reference',
@@ -60,22 +76,14 @@ class EnforcementVisit extends Model
         ];
     }
 
-    protected static function booted(): void
+    public static function referencePrefix(): string
     {
-        static::creating(function (EnforcementVisit $visit) {
-            if (empty($visit->visit_reference)) {
-                $visit->visit_reference = self::nextReference();
-            }
-        });
+        return 'VIS';
     }
 
-    /** Internal-only reference VIS-YYYY-##### — never confused with LITAS ids. */
-    public static function nextReference(): string
+    public static function referenceField(): string
     {
-        $year = date('Y');
-        $last = self::withTrashed()->where('visit_reference', 'like', "VIS-{$year}-%")->max('id');
-
-        return sprintf('VIS-%s-%05d', $year, ($last ?: 0) + 1);
+        return 'visit_reference';
     }
 
     public function assignedTo(): BelongsTo

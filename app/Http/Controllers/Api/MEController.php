@@ -10,6 +10,7 @@ use App\Models\PropertyBill;
 use App\Models\Task;
 use App\Models\User;
 use App\Services\AssignmentEligibilityService;
+use App\Services\SectionWorkspaceService;
 use App\Services\TaskService;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -22,8 +23,7 @@ class MEController extends Controller
 {
     public function __construct(
         private readonly TaskService $tasks,
-    ) {
-    }
+    ) {}
 
     /* ---------- M&E queries ---------- */
 
@@ -75,7 +75,7 @@ class MEController extends Controller
         ]);
 
         if ($query->assigned_to) {
-            $assignee = \App\Models\User::find($query->assigned_to);
+            $assignee = User::find($query->assigned_to);
             $this->tasks->notify($assignee, 'Query assigned', "M&E query {$query->query_reference} assigned to you.", 'me');
         }
 
@@ -90,6 +90,7 @@ class MEController extends Controller
         $user = $request->user();
         abort_unless($user->canPermission('me.respond'), 403, 'Missing permission: me.respond');
         abort_if($query->status === 'Closed', 422, 'Query is closed.');
+        $this->assertQueryInScope($query, $user);
 
         $data = $request->validate([
             'response' => 'required|string|max:4000',
@@ -102,7 +103,7 @@ class MEController extends Controller
             'responded_at' => now(),
         ]);
 
-        $this->tasks->notify(\App\Models\User::find($query->raised_by), 'Query answered', "Query {$query->query_reference} has a response.", 'me');
+        $this->tasks->notify(User::find($query->raised_by), 'Query answered', "Query {$query->query_reference} has a response.", 'me');
 
         return response()->json([
             'data' => $this->presentQuery($query->fresh()),
@@ -114,6 +115,7 @@ class MEController extends Controller
     {
         $user = $request->user();
         abort_unless($user->canPermission('me.close'), 403, 'Missing permission: me.close');
+        $this->assertQueryInScope($query, $user);
 
         $query->update([
             'status' => 'Closed',
@@ -133,7 +135,13 @@ class MEController extends Controller
     public function assignWalkIn(Request $request, Task $task)
     {
         $user = $request->user();
-        abort_unless($user->canPermission('me.assign_walkin'), 403, 'Missing permission: me.assign_walkin');
+        abort_unless(
+            $user->is_active && in_array($user->role?->name, ['Enforcement Supervisor', 'System Administrator'], true),
+            403,
+            'Only an Enforcement Supervisor may assign unassigned bill-delivery work.'
+        );
+        abort_unless($user->hasAnyPermission(['me.assign_walkin', 'tasks.assign']), 403, 'Missing permission to assign walk-in bill delivery.');
+        abort_unless(SectionWorkspaceService::mayAssignTask($user, $task->task_type), 403, 'Assignment outside your workspace authority.');
         abort_unless($task->reference_type === 'property_bill', 422, 'Task is not linked to a bill.');
 
         $data = $request->validate([
@@ -151,6 +159,8 @@ class MEController extends Controller
             422,
             'Assignment rejected. '.$officer->full_name.' does not have permission to perform Bill Delivery.'
         );
+        $organization = app(\App\Services\EnforcementOrganizationService::class);
+        $organization->authorizeBillAssignment($user, $officer, $task);
 
         $this->tasks->assignBillTask($bill, $officer, $user);
 
@@ -164,8 +174,21 @@ class MEController extends Controller
     public function reassignTask(Request $request, Task $task)
     {
         $user = $request->user();
+        if ($task->task_type === Task::TYPE_BILL_DELIVERY) {
+            abort_unless(
+                $user->is_active && in_array($user->role?->name, ['Enforcement Supervisor', 'System Administrator'], true),
+                403,
+                'Only an Enforcement Supervisor may manage bill-delivery assignments.'
+            );
+        }
         abort_unless($user->hasAnyPermission(['me.reassign', 'tasks.reassign']), 403, 'Missing permission: me.reassign');
+        abort_unless(SectionWorkspaceService::mayAssignTask($user, $task->task_type), 403, 'Assignment outside your workspace authority.');
         abort_if(in_array($task->status, Task::COMPLETED_STATUSES, true), 422, 'Completed tasks cannot be reassigned.');
+        abort_if(
+            $task->task_type === Task::TYPE_BILL_DELIVERY && $task->status === 'Delivered',
+            422,
+            'A delivered bill task cannot be reassigned.'
+        );
 
         $data = $request->validate([
             'officer_id' => 'required|integer|exists:users,id',
@@ -178,6 +201,9 @@ class MEController extends Controller
             422,
             'Assignment rejected. '.($target?->full_name ?? 'User')." does not have permission to perform {$task->task_type}."
         );
+        $membership = $task->task_type === Task::TYPE_BILL_DELIVERY
+            ? app(\App\Services\EnforcementOrganizationService::class)->authorizeBillAssignment($user, $target, $task)
+            : null;
 
         $from = $task->assigned_to;
         $fromStatus = $task->status;
@@ -195,9 +221,26 @@ class MEController extends Controller
             'remarks' => $data['notes'] ?? ('Reassigned to '.$target->full_name.' (from user #'.($from ?? 'none').').'),
         ]);
 
-        $task->recordEngagement('assignment', 'reassigned', $data['notes'] ?? "Reassigned to ".$target->full_name.'.', $user);
+        $task->recordEngagement('assignment', 'reassigned', $data['notes'] ?? 'Reassigned to '.$target->full_name.'.', $user);
 
         $this->tasks->notify($target, 'Task reassigned', "{$task->task_reference} reassigned to you.", 'me');
+
+        // Keep the bill's own state aligned when its delivery task moves. The
+        // task is forced to 'Assigned', so a bill still sitting at the
+        // assignment stage must follow it (mirrors TaskService::assignBillTask);
+        // a bill already further along keeps its stage untouched.
+        if ($task->task_type === Task::TYPE_BILL_DELIVERY && $task->reference_type === 'property_bill') {
+            if ($bill = PropertyBill::find($task->reference_id)) {
+                $billUpdates = ['assigned_enforcement_officer_id' => $task->assigned_to];
+                if ($membership) {
+                    $billUpdates['primary_tax_district_id'] = $membership->primary_district_id;
+                }
+                if (in_array($bill->case_status, ['Logged', 'Awaiting Assignment'], true)) {
+                    $billUpdates['case_status'] = 'Assigned';
+                }
+                $bill->update($billUpdates);
+            }
+        }
 
         return response()->json([
             'data' => ['task_id' => $task->id, 'task_reference' => $task->task_reference, 'assigned_to' => $data['officer_id']],
@@ -250,7 +293,7 @@ class MEController extends Controller
 
         $query = Task::query()->where('reference_type', 'property_bill')->with(['assignedTo:id,full_name', 'bill:id,document_number,property_id,taxpayer_name,recipient_type,outstanding_balance,case_status'])
             ->when($request->query('walkin') === '1', fn ($q) => $q->whereHas('bill', fn ($b) => $b->where('recipient_type', PropertyBill::RECIPIENT_WALK_IN)))
-            ->when($request->query('aging') === '1', fn ($q) => $q->whereNotNull('due_date')->whereDate('due_date', '<', now())->whereNotIn('status', Task::COMPLETED_STATUSES));
+            ->when($request->query('aging') === '1', fn ($q) => $q->overdue());
 
         $rows = $query->orderByDesc('id')->limit(100)->get();
 
@@ -261,6 +304,7 @@ class MEController extends Controller
             'status' => $t->status,
             'priority' => $t->priority,
             'due_date' => $t->due_date?->toDateString(),
+            'deadline_status' => $t->presentDeadline(),
             'assigned_to' => $t->assignedTo?->full_name,
             'bill' => $t->bill ? [
                 'id' => $t->bill->id,
@@ -287,6 +331,10 @@ class MEController extends Controller
             if (in_array($status, DataQualityFlag::STATUSES, true)) {
                 $query->where('status', $status);
             }
+        }
+
+        if ($user->scopeLevel() === 'own') {
+            $query->where('flagged_by', $user->id);
         }
 
         $rows = $query->orderByDesc('id')->paginate($request->query('per_page', 20))->withQueryString();
@@ -395,7 +443,7 @@ class MEController extends Controller
     public function decideAppeal(Request $request, Appeal $appeal)
     {
         $user = $request->user();
-        abort_unless($user->hasAnyPermission(['me.view', 'valuation.approve']), 403, 'Missing permission.');
+        abort_unless($user->canPermission('valuation.approve'), 403, 'Missing permission: valuation.approve');
 
         $data = $request->validate([
             'decision' => ['required', Rule::in(['upheld', 'adjusted', 'dismissed'])],
@@ -416,6 +464,21 @@ class MEController extends Controller
             'data' => $this->presentAppeal($appeal->fresh()),
             'message' => 'Appeal decided.',
         ]);
+    }
+
+    /** Record-scope bound on query mutations: own/team users may only act on their own queries or those assigned to their team. */
+    private function assertQueryInScope(MeQuery $query, User $user): void
+    {
+        if (in_array($user->scopeLevel(), ['section', 'division', 'system'], true)) {
+            return;
+        }
+
+        $isAuthorized = $query->raised_by === $user->id
+            || ($user->scopeLevel() === 'team'
+                && $query->assigned_to
+                && User::where('id', $query->assigned_to)->where('supervisor_id', $user->id)->exists());
+
+        abort_unless($isAuthorized, 403, 'This query is outside your scope.');
     }
 
     private function presentQuery(MeQuery $q): array

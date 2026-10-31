@@ -8,12 +8,17 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 class PaymentVerification extends Model
 {
     public const MATCH_PENDING = 'Pending';
+
     public const MATCH_MATCH = 'Match';
+
     public const MATCH_MISMATCH = 'Mismatch';
 
     public const STATUS_PENDING = 'Pending';
+
     public const STATUS_CONFIRMED = 'Confirmed';
+
     public const STATUS_REJECTED = 'Rejected';
+
     public const STATUS_EXCEPTION = 'Exception';
 
     protected $fillable = [
@@ -31,10 +36,12 @@ class PaymentVerification extends Model
         'payment_period',
         'receipt_date',
         'receipt_attachment',
+        'receipt_fingerprint',
+        'duplicate_warnings',
         'match_status',
-        'litas_verification_status',
+        'source_verification_status',
         'verified_amount',
-        'litas_reference',
+        'source_reference',
         'verified_by',
         'verified_at',
         'verification_status',

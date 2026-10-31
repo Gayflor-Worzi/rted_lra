@@ -14,15 +14,27 @@ class User extends Authenticatable
     use HasApiTokens, HasFactory, Notifiable;
 
     public const SCOPE_OWN = 'own';
+
     public const SCOPE_TEAM = 'team';
+
+    /**
+     * Visible across the staff you supervise, but read-only on their records: you may
+     * conduct your own assessments, never a colleague's. Deliberately the same
+     * visibility as SCOPE_TEAM, so the difference is enforced on the write paths.
+     */
+    public const SCOPE_TEAM_VIEW = 'team_view';
+
     public const SCOPE_SECTION = 'section';
+
     public const SCOPE_DIVISION = 'division';
+
     public const SCOPE_SYSTEM = 'system';
 
     protected $fillable = [
         'staff_id',
         'full_name',
         'email',
+        'phone',
         'password',
         'section_id',
         'role_id',
@@ -45,6 +57,17 @@ class User extends Authenticatable
         ];
     }
 
+    protected static function booted(): void
+    {
+        static::created(fn (User $user) => app(\App\Services\StaffOrganizationHistoryService::class)->record($user));
+
+        static::updated(function (User $user): void {
+            if ($user->wasChanged(['role_id', 'section_id', 'supervisor_id'])) {
+                app(\App\Services\StaffOrganizationHistoryService::class)->record($user);
+            }
+        });
+    }
+
     public function role(): BelongsTo
     {
         return $this->belongsTo(Role::class, 'role_id');
@@ -65,9 +88,14 @@ class User extends Authenticatable
         return $this->hasMany(User::class, 'supervisor_id');
     }
 
+    public function enforcementTeamMemberships(): HasMany
+    {
+        return $this->hasMany(EnforcementTeamMembership::class, 'officer_id');
+    }
+
     public function notifications(): HasMany
     {
-        return $this->hasMany(\App\Models\Notification::class, 'user_id');
+        return $this->hasMany(Notification::class, 'user_id');
     }
 
     /**
@@ -139,7 +167,7 @@ class User extends Authenticatable
     {
         $names = array_keys($overrides);
 
-        $ids = \App\Models\Permission::whereIn('name', $names)->pluck('id', 'name');
+        $ids = Permission::whereIn('name', $names)->pluck('id', 'name');
 
         $rows = [];
         foreach ($overrides as $name => $allow) {

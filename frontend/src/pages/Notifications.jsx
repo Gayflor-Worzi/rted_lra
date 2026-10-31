@@ -10,6 +10,7 @@ const KIND_BADGE = {
   valuation: { tone: 'purple', label: 'Valuation' },
   discovery: { tone: 'indigo', label: 'Discovery' },
   visit: { tone: 'teal', label: 'Visit' },
+  organization: { tone: 'navy', label: 'Organization' },
   broadcast: { tone: 'rose', label: 'Broadcast' },
   info: { tone: 'slate', label: 'Notice' },
 }
@@ -167,7 +168,7 @@ export default function Notifications() {
                         )
                       })}
                     </div>
-                  ) : d.kind === 'info' ? null : (
+                  ) : d.kind === 'info' || d.kind === 'organization' ? null : (
                     <p className="text-xs text-slate-400">No further action needed — this notification is for information.</p>
                   )}
                 </div>

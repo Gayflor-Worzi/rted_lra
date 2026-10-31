@@ -11,6 +11,14 @@ import { BrandHeader, Badge, Empty, Card, Field, Input, Btn, ChipRow } from '../
 const fm = (v) => (v == null ? '—' : 'US$ ' + Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }))
 const STATUSES = ['Pending', 'Confirmed', 'Rejected', 'Exception', 'all']
 
+const blobToDataUri = (blob) =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result)
+    reader.onerror = reject
+    reader.readAsDataURL(blob)
+  })
+
 export default function PaymentsScreen() {
   const { user } = useAuth()
   const insets = useSafeAreaInsets()
@@ -19,6 +27,7 @@ export default function PaymentsScreen() {
   const [refreshing, setRefreshing] = useState(false)
   const [open, setOpen] = useState(null)
   const [receipt, setReceipt] = useState(null)
+  const [receiptUri, setReceiptUri] = useState(null)
   const [busy, setBusy] = useState('')
   const [mode, setMode] = useState(null)
   const [input, setInput] = useState('')
@@ -47,10 +56,19 @@ export default function PaymentsScreen() {
   const refresh = async () => { setRefreshing(true); await load(); setRefreshing(false) }
 
   const openClaim = async (id) => {
-    setOpen(id); setReceipt(null); setMode(null); setRemarks(''); setInput(''); setMismatch(false)
+    setOpen(id); setReceipt(null); setReceiptUri(null); setMode(null); setRemarks(''); setInput(''); setMismatch(false)
     try {
       const r = await api.get(`/payments/verifications/${id}/receipt`)
       setReceipt(r.data.data)
+      const attach = r.data.data?.receipt_attachment
+      if (attach && !/^(https?|file):/.test(attach)) {
+        try {
+          const fr = await api.get(`/payments/verifications/${id}/receipt-file`, { responseType: 'blob' })
+          setReceiptUri(await blobToDataUri(fr.data))
+        } catch {
+          setReceiptUri(null)
+        }
+      }
     } catch { setReceipt(null) }
   }
 
@@ -59,7 +77,7 @@ export default function PaymentsScreen() {
     try {
       await api.post(`/payments/verifications/${open}/confirm`, {
         verified_amount: input.trim() ? Number(input) : undefined,
-        litas_reference: undefined,
+        source_reference: undefined,
         remarks: remarks.trim() || undefined,
       })
       Alert.alert('Payment confirmed', 'The bill outstanding balance has been recalculated.')
@@ -151,12 +169,12 @@ export default function PaymentsScreen() {
                     <Text style={s.compareHint}>The Account Officer compares the two. A mismatch is grounds for rejection.</Text>
                   </Card>
 
-                  {receipt?.receipt_attachment && /^https?:/.test(receipt.receipt_attachment) ? (
+                  {(receiptUri || (receipt?.receipt_attachment && /^(https?|file):/.test(receipt.receipt_attachment))) && (
                     <Card>
                       <Text style={s.compareTitle}>Receipt photo</Text>
-                      <Image source={{ uri: receipt.receipt_attachment }} style={{ width: '100%', height: 180, borderRadius: 12 }} resizeMode="contain" />
+                      <Image source={{ uri: receiptUri || receipt.receipt_attachment }} style={{ width: '100%', height: 180, borderRadius: 12 }} resizeMode="contain" />
                     </Card>
-                  ) : null}
+                  )}
 
                   {!mode && (
                     <View style={{ paddingHorizontal: 16, gap: 10, marginTop: 4 }}>

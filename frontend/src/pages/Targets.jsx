@@ -1,10 +1,23 @@
 import { useEffect, useState } from 'react'
 import api, { unwrap, errMsg } from '../api'
 import { useAuth } from '../auth'
-import { Card, Badge, Spinner, ErrorBox, Btn, Input, PageTitle, SuccessBox, fmtDate, fmtMoney } from '../ui'
+import { Card, Badge, Spinner, ErrorBox, Btn, Input, PageTitle, SuccessBox, fmtDate, fmtMoney, roleName } from '../ui'
 import { TARGET_METRICS, TARGET_FREQUENCIES, targetMetricLabel } from '../lib/constants'
 
 const STATUS_TONE = { Approved: 'green', Draft: 'slate', Archived: 'slate' }
+
+const Field = ({ label, value, onChange, ph, type = 'text', options, step, min }) => (
+  <div>
+    <label className="block text-xs font-semibold text-slate-600 mb-1.5">{label}</label>
+    {type === 'select' ? (
+      <select className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm bg-white" value={value} onChange={onChange}>
+        {options.map((o) => <option key={o} value={o}>{o}</option>)}
+      </select>
+    ) : (
+      <Input className="w-full" type={type} step={step} min={min} value={value} onChange={onChange} placeholder={ph} />
+    )}
+  </div>
+)
 
 export default function Targets() {
   const { can } = useAuth()
@@ -94,7 +107,7 @@ export default function Targets() {
                 <label className="block text-xs font-semibold text-slate-600 mb-1.5">Staff member *</label>
                 <select className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm bg-white" required value={form.user_id} onChange={set('user_id')}>
                   <option value="">Select staff…</option>
-                  {users.map((u) => <option key={u.id} value={u.id}>{u.full_name} — {u.role?.name || u.email}</option>)}
+                  {users.map((u) => <option key={u.id} value={u.id}>{u.full_name} — {roleName(u) || u.email}</option>)}
                 </select>
               </div>
               <div>
@@ -211,19 +224,4 @@ export default function Targets() {
       )}
     </div>
   )
-
-  function Field({ label, value, onChange, ph, type = 'text', options, step, min }) {
-    return (
-      <div>
-        <label className="block text-xs font-semibold text-slate-600 mb-1.5">{label}</label>
-        {type === 'select' ? (
-          <select className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm bg-white" value={value} onChange={onChange}>
-            {options.map((o) => <option key={o} value={o}>{o}</option>)}
-          </select>
-        ) : (
-          <Input className="w-full" type={type} step={step} min={min} value={value} onChange={onChange} placeholder={ph} />
-        )}
-      </div>
-    )
-  }
 }

@@ -2,11 +2,14 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\GeneratesInternalReference;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class MeQuery extends Model
 {
+    use GeneratesInternalReference;
+
     protected $fillable = [
         'query_reference',
         'title',
@@ -35,15 +38,20 @@ class MeQuery extends Model
     protected static function booted(): void
     {
         static::creating(function (MeQuery $q) {
-            if (empty($q->query_reference)) {
-                $year = date('Y');
-                $last = self::where('query_reference', 'like', "MEQ-{$year}-%")->max('id');
-                $q->query_reference = sprintf('MEQ-%s-%05d', $year, ($last ?: 0) + 1);
-            }
             if (empty($q->status)) {
                 $q->status = 'Open';
             }
         });
+    }
+
+    public static function referencePrefix(): string
+    {
+        return 'MEQ';
+    }
+
+    public static function referenceField(): string
+    {
+        return 'query_reference';
     }
 
     public function assignee(): BelongsTo

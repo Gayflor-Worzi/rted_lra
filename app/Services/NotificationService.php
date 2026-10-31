@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\Notification;
 use App\Models\Role;
 use App\Models\User;
+use Illuminate\Support\Facades\Log;
 
 class NotificationService
 {
@@ -29,9 +30,16 @@ class NotificationService
      */
     public static function sendToRole(string $roleName, string $title, string $message, string $type = 'system', ?string $relatedType = null, ?int $relatedId = null, string $priority = 'normal'): void
     {
-        $role = Role::where('name', $roleName)->first();
+        // Case- and whitespace-insensitive role match so a label shipped from a
+        // workbook or hand-typed in a command never silently no-ops.
+        $role = Role::whereRaw('LOWER(TRIM(name)) = ?', [mb_strtolower(trim($roleName))])->first();
 
         if (! $role) {
+            Log::warning('sendToRole: unknown role — notification not delivered.', [
+                'role' => $roleName,
+                'caller' => debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 2)[1]['function'] ?? 'unknown',
+            ]);
+
             return;
         }
 

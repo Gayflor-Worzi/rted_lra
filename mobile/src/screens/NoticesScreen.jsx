@@ -1,11 +1,13 @@
 import { useCallback, useState } from 'react'
 import { View, Text, FlatList, TouchableOpacity, StyleSheet, RefreshControl, ActivityIndicator } from 'react-native'
-import { useFocusEffect } from '@react-navigation/native'
+import { useFocusEffect, useNavigation } from '@react-navigation/native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import api from '../api'
-import { serverMessage } from '../rbac'
+import { useAuth } from '../auth'
+import { fetchOfflineRead } from '../offline'
+import { hasAny, serverMessage } from '../rbac'
 import { theme } from '../theme'
-import { Screen, BrandHeader, Card, Badge, Btn } from '../components'
+import { Screen, BrandHeader, Card, Badge, Btn, OfflineReadStatus } from '../components'
 
 const timeAgo = (iso) => {
   if (!iso) return ''
@@ -20,36 +22,59 @@ const timeAgo = (iso) => {
   return new Date(iso).toLocaleDateString()
 }
 
-const TYPE_ICON = { broadcast: '📢', task: '📋', payment: '🧾', audit: '🛡️', system: '⚙️' }
+const TYPE_ICON = { broadcast: '📢', task: '📋', payment: '🧾', audit: '🛡️', organization: '🏛️', system: '⚙️' }
 
 export default function NoticesScreen() {
   const insets = useSafeAreaInsets()
+  const navigation = useNavigation()
+  const { user, canUseOfflineCache } = useAuth()
   const [items, setItems] = useState(null)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
   const [readBusy, setReadBusy] = useState(false)
+  const [readStatus, setReadStatus] = useState(null)
+  const [syncedAt, setSyncedAt] = useState(null)
 
   const load = useCallback(async (showSpinner = false) => {
     if (showSpinner) setRefreshing(true)
     try {
-      const r = await api.get('/notifications', { params: { per_page: 50 } })
-      setItems(r.data?.data?.data || r.data?.data || [])
-      setError('')
+      const result = await fetchOfflineRead({
+        module: 'notices',
+        cacheKey: `${user?.role}:list:50`,
+        user,
+        allowCache: canUseOfflineCache,
+        request: () => api.get('/notifications', { params: { per_page: 50 } }),
+        select: (response) => response.data?.data?.data || response.data?.data || [],
+        cacheSelect: (notices) => Array.isArray(notices)
+          ? notices.filter((item) => !String(item?.type || '').toLowerCase().includes('payment'))
+          : [],
+      })
+      if (result.status === 'expired') {
+        setItems([])
+        setError('Offline notices have expired. Connect to refresh.')
+      } else {
+        setItems(result.data)
+        setError('')
+      }
+      setReadStatus(result.status)
+      setSyncedAt(result.syncedAt)
     } catch (e) {
       setError(serverMessage(e, 'Could not load notices.'))
       setItems([])
+      setReadStatus(null)
     } finally { setRefreshing(false) }
-  }, [])
+  }, [user, canUseOfflineCache])
 
   useFocusEffect(useCallback(() => { load() }, [load]))
 
   const markRead = async (n) => {
-    if (n.read_at) return
+    if (n.read_at || readStatus === 'cached' || readStatus === 'expired') return
     try { await api.post(`/notifications/${n.id}/read`) } catch {}
     setItems((rows) => rows.map((x) => (x.id === n.id ? { ...x, read_at: new Date().toISOString() } : x)))
   }
 
   const markAll = async () => {
+    if (readStatus === 'cached' || readStatus === 'expired') return
     setReadBusy(true)
     try {
       await api.post('/notifications/read-all')
@@ -59,9 +84,21 @@ export default function NoticesScreen() {
   }
 
   const unread = items?.filter((n) => !n.read_at).length || 0
+  const canOpenOrganization = hasAny(user, [
+    'enforcement.org.manage',
+    'enforcement.org.recommend',
+    'enforcement.org.review',
+  ])
+
+  const open = (item) => {
+    markRead(item)
+    if (item.type === 'organization' && canOpenOrganization) {
+      navigation.navigate('EnforcementOrganization')
+    }
+  }
 
   const row = ({ item }) => (
-    <TouchableOpacity onPress={() => markRead(item)} activeOpacity={0.7}>
+    <TouchableOpacity onPress={() => open(item)} activeOpacity={0.7}>
       <Card style={[s.card, !item.read_at && s.unreadCard]}>
         <View style={s.rowTop}>
           <Text style={s.icon}>{TYPE_ICON[item.type] || '🔔'}</Text>
@@ -80,18 +117,19 @@ export default function NoticesScreen() {
   )
 
   return (
-    <Screen>
+    <Screen scroll={false}>
       <BrandHeader
         title="Notices"
         subtitle={unread > 0 ? `${unread} unread` : 'All caught up'}
         right={
-          unread > 0 ? (
+          unread > 0 && readStatus !== 'cached' ? (
             <TouchableOpacity onPress={markAll} disabled={readBusy} hitSlop={8}>
               <Text style={{ color: theme.colors.primary, fontWeight: '800', fontSize: 12.5 }}>{readBusy ? '…' : 'Mark all read'}</Text>
             </TouchableOpacity>
           ) : null
         }
       />
+      <OfflineReadStatus status={readStatus} syncedAt={syncedAt} />
 
       {items === null ? (
         <View style={{ paddingTop: 60, alignItems: 'center' }}>

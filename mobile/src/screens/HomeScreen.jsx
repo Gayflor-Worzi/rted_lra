@@ -3,10 +3,16 @@ import { View, Text, TouchableOpacity, RefreshControl, StyleSheet, Alert, useWin
 import { useFocusEffect, useNavigation } from '@react-navigation/native'
 import api from '../api'
 import { useAuth } from '../auth'
-import { hasAny, serverMessage } from '../rbac'
+import { fetchOfflineRead } from '../offline'
+import { hasAny, hasAll, serverMessage } from '../rbac'
 import { theme } from '../theme'
-import { Screen, BrandHeader, Card, Badge } from '../components'
-import { Donut, HBars, HScrollChips, CHART_COLORS } from '../charts'
+import { Screen, BrandHeader, Card, Badge, FilterDropdown, OfflineReadStatus } from '../components'
+import { Donut, HBars } from '../charts'
+import OfficerHome from './parts/OfficerHome'
+import ValuationOfficerHome from './parts/ValuationOfficerHome'
+import ManagerHome from './parts/ManagerHome'
+import ManagementPerformance from './parts/ManagementPerformance'
+import { performanceProgress } from '../performanceProgress.mjs'
 
 const fmtMoney = (v) => {
   if (v === null || v === undefined || Number.isNaN(Number(v))) return '—'
@@ -14,8 +20,14 @@ const fmtMoney = (v) => {
 }
 
 const fmtNum = (v) => {
-  if (v === null || v === undefined || Number.isNaN(Number(v))) return '—'
+  if (v === null || v === undefined || Number.isNaN(Number(v))) return '-'
   return `${Number(v)}`
+}
+
+const fmtPerformanceNum = (v) => {
+  if (v === null || v === undefined || v === '') return '—'
+  const n = Number(v)
+  return Number.isFinite(n) ? `${n}` : '—'
 }
 
 /** Dashboard tabs. */
@@ -33,6 +45,7 @@ const QUICK_ACTION_PERMS = {
   receipt: ['payments.claim'],
   verify: ['payments.verify', 'payments.reject', 'payments.view_queue'],
   valuations: ['valuation.create', 'valuation.review', 'valuation.view_history'],
+  gps: ['gps.capture', 'gps.certify'],
 }
 
 /** Role-aware registration order used to display the officer's own assignments. */
@@ -57,10 +70,21 @@ const timeAgo = (iso) => {
 
 const initials = (name) => (name || '?').split(/\s+/).filter(Boolean).slice(0, 2).map((p) => p[0]).join('').toUpperCase()
 
+// Target dates arrive as YYYY-MM-DD; format them without shifting the day.
+const fmtDay = (d) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(d || ''))
+  if (!m) return ''
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
+    .toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+// Staff target metric → readable label ("bills_logged" → "Bills Logged").
+const metricLabel = (m) => String(m || '').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+
 const ACT_ICON = { task: '📋', visit: '🚗', payment: '🧾', discovery: '📍', valuation: '🏷️' }
 
 export default function HomeScreen() {
-  const { user, logout } = useAuth()
+  const { user, logout, canUseOfflineCache } = useAuth()
   const navigation = useNavigation()
   const safeNav = useCallback((name, params) => { try { navigation.navigate(name, params) } catch {} }, [navigation])
   const { width } = useWindowDimensions()
@@ -70,6 +94,9 @@ export default function HomeScreen() {
   const [data, setData] = useState(null)
   const [assignments, setAssignments] = useState([])
   const [err, setErr] = useState('')
+  const [readStatus, setReadStatus] = useState(null)
+  const [syncedAt, setSyncedAt] = useState(null)
+  const [cacheError, setCacheError] = useState(null)
   const [refreshing, setRefreshing] = useState(false)
 
   const [tab, setTab] = useState('Overview')
@@ -90,9 +117,10 @@ export default function HomeScreen() {
   }
 
   const showProfile = () => {
+    const assignment = data?.profile?.organizational_assignment
     Alert.alert(
       data?.profile?.full_name || user?.full_name || 'Profile',
-      `${data?.profile?.role || user?.role || ''}\n${data?.profile?.section || ''}\n${user?.email || ''}`,
+      `${data?.profile?.role || user?.role || ''}\n${data?.profile?.section || ''}\n${user?.email || ''}${user?.role === 'Enforcement Officer' ? `\n${assignment?.tax_region || 'Not Assigned'}\n${assignment?.tax_district || 'Not Assigned'}` : ''}`,
       [
         { text: 'Close', style: 'cancel' },
         { text: 'Log out', style: 'destructive', onPress: () => logout() },
@@ -108,16 +136,36 @@ export default function HomeScreen() {
     Alert.alert('Notices', `${data?.notifications?.unread || 0} unread notice(s) in your section.`, [{ text: 'OK' }])
   }
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (fresh = false) => {
     try {
-      const r = await api.get('/dashboard/my')
-      setData(r.data?.data || r.data || {})
-      setErr('')
+      // `fresh` bypasses the backend's 45s dashboard cache so a pull-to-refresh
+      // re-reads the latest target/achievement values.
+      const result = await fetchOfflineRead({
+        module: 'dashboard',
+        cacheKey: `${user?.role}:my`,
+        user,
+        allowCache: canUseOfflineCache,
+        request: () => api.get('/dashboard/my', fresh ? { params: { fresh: 1 } } : undefined),
+        select: (response) => response.data?.data || response.data || {},
+      })
+      if (result.status === 'expired') {
+        setData(null)
+        setErr('Your offline dashboard copy has expired. Connect to refresh your dashboard.')
+      } else {
+        setData(result.data)
+        setErr('')
+      }
+      setReadStatus(result.status)
+      setSyncedAt(result.syncedAt)
+      setCacheError(result.cacheError || null)
     } catch (e) {
-      setErr('Could not load your dashboard.')
+      setErr(serverMessage(e, 'Could not load your dashboard.'))
+      setData(null)
+      setReadStatus(null)
+    } finally {
+      setTick((t) => t + 1)
     }
-    setTick((t) => t + 1)
-  }, [])
+  }, [user, canUseOfflineCache])
 
   // The officer's own assignments from a backend-scoped endpoint — used only for
   // the compact "Active Assignments" preview. The backend returns ONLY this
@@ -145,7 +193,7 @@ export default function HomeScreen() {
 
   const refresh = async () => {
     setRefreshing(true)
-    await Promise.all([load(), loadAssignments()])
+    await Promise.all([load(true), loadAssignments()])
     setRefreshing(false)
   }
 
@@ -169,37 +217,61 @@ export default function HomeScreen() {
 
   const perf = data?.performance || {}
   const indicators = perf.indicators || {}
-  const hasTarget = !!perf.has_target
+  // The backend returns every approved target for this user and the aggregate
+  // computed from those same presented target values.
+  const targets = Array.isArray(perf.targets) ? perf.targets : []
+  const overall = perf.overall || null
+  const overallProgress = performanceProgress(overall?.completion_rate)
 
   const taskOverview = data?.task_overview || {}
   const tasks = data?.tasks || {}
   const billsArea = data?.bills_area || {}
-  const showBills = billsArea && (billsArea.total_bills || hasAny(user, ['bills.view', 'bills.create']))
-  const isEnforcement = hasAny(user, ['enforcement.record_visit', 'enforcement.view_assignments', 'tasks.view_own'])
+  // The My Bills money block is server-gated to bill-handling roles; a read-only
+  // viewer (e.g. Valuation Officer) receives no bills_area payload at all.
+  const showBills = !!(billsArea && billsArea.total_bills)
+  // Enforcement staff are keyed off OPERATIONAL permissions only — the
+  // 'enforcement.view_assignments' / 'enforcement.escalate' shortcuts are held by
+  // oversight roles (Assistant Commissioner, Account Manager) and grant no
+  // enforcement-screen presence (§23–§24).
+  const isEnforcement = hasAny(user, ['enforcement.record_visit', 'enforcement.bill_delivery', 'enforcement.payment_followup', 'enforcement.issue_warning'])
+
+  // Role-specific operational dashboards: officers get a dedicated home that
+  // reads /dashboard/officer, keeping web/mobile in exact parity.
+  const isOfficer = user?.role === 'Account & Records Officer' || user?.role === 'Enforcement Officer'
+
+  // Valuation Officers get their own workload home fed by /dashboard/my.
+  const isValOfficer = user?.role === 'Valuation Officer'
+  const canViewEnforcementOrganization = hasAny(user, [
+    'enforcement.org.manage',
+    'enforcement.org.recommend',
+    'enforcement.org.review',
+  ])
+
+  // Managers (Account & Record, Valuation, Enforcement) get a role-specific
+  // manager dashboard fed by /dashboard/manager/* — mirrors the web.
+  const isManager = ['Account Manager', 'Valuation Manager', 'Enforcement Manager', 'Enforcement Supervisor', 'Assistant Commissioner'].includes(user?.role)
+  const isManagementPerformance = [
+    'Account Manager', 'Valuation Manager', 'Enforcement Manager',
+    'Account Supervisor', 'Valuation Supervisor', 'Enforcement Supervisor',
+    'Assistant Commissioner',
+  ].includes(user?.role)
 
   const priority = data?.priority_actions || []
   const engagement = data?.current_engagement
   const recent = data?.recent_activity || []
-  const quick = (data?.quick_actions || []).filter((q) => hasAny(user, QUICK_ACTION_PERMS[q.key] || []))
+  const quick = (data?.quick_actions || []).filter((q) => {
+    const needed = QUICK_ACTION_PERMS[q.key] || []
+    return q.key === 'gps' ? hasAll(user, needed) : hasAny(user, needed)
+  })
 
-  // Completed / Pending / Target / Completion% used by the compact performance block.
+  // Operational task counts are separate from accumulated performance targets.
   const completedCount = taskOverview.completed ?? tasks.completed ?? 0
-  const pendingCount = taskOverview.in_progress ?? 0
   const activeCount = taskOverview.assigned ?? tasks.total_active ?? 0
-  const overdueCount = taskOverview.overdue ?? 0
-  const completionPct = hasTarget
-    ? Math.round(perf.completion_rate)
-    : (activeCount + pendingCount) > 0
-      ? Math.round((completedCount / (completedCount + Math.max(activeCount, pendingCount))) * 100)
-      : 0
-
   // Single most urgent/current priority — the hidden rest still present in full tab for admins.
   const currentPriority = priority[0] || null
 
   // Reorder the officer's OWN assignments for display by the enforcement flow.
   const preview = useMemo(() => {
-    const today = new Date()
-    const todayStr = today.toISOString().slice(0, 10)
     return [...assignments].sort((a, b) => {
       const rankA = PRIORITY_ORDER.indexOf(a.status)
       const rankB = PRIORITY_ORDER.indexOf(b.status)
@@ -208,9 +280,9 @@ export default function HomeScreen() {
         const rb = rankB === -1 ? 999 : rankB
         if (ra !== rb) return ra - rb
       }
-      const od = (a.due_date || '').slice(0, 10)
-      const ob = (b.due_date || '').slice(0, 10)
-      if ((od && od < todayStr) !== (ob && ob < todayStr)) return od < todayStr ? -1 : 1
+      const oa = a.deadline_status?.is_overdue
+      const ob = b.deadline_status?.is_overdue
+      if (oa !== ob) return oa ? -1 : 1
       return 0
     })
   }, [assignments])
@@ -251,7 +323,10 @@ export default function HomeScreen() {
     <Screen refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={theme.colors.primary} />}>
       <BrandHeader
         title={`Welcome, ${data?.profile?.first_name || user?.full_name?.split(' ')[0] || 'there'}`}
-        subtitle={data?.profile ? `${data.profile.role} · ${data.profile.section}` : 'Field operations'}
+        subtitle={data?.profile
+          ? `${data.profile.role} · ${data.profile.section}${user?.role === 'Enforcement Officer' ? ` · ${data.profile.organizational_assignment?.tax_region || 'Not Assigned'} · ${data.profile.organizational_assignment?.tax_district || 'Not Assigned'}` : ''}`
+          : 'Field operations'}
+        subtitleNumberOfLines={user?.role === 'Enforcement Officer' ? null : 1}
         right={
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
             <TouchableOpacity onPress={showNotice} hitSlop={6} style={styles.iconBtn}>
@@ -268,6 +343,7 @@ export default function HomeScreen() {
           </View>
         }
       />
+      <OfflineReadStatus status={readStatus} syncedAt={syncedAt} cacheError={cacheError} />
 
       {err ? (
         <Card style={{ marginTop: 12 }}>
@@ -294,20 +370,33 @@ export default function HomeScreen() {
 
           {tab === 'Overview' && (
             <>
-              <HeroBlock
-                hasTarget={hasTarget}
-                perf={perf}
-                completedCount={completedCount}
-                pendingCount={pendingCount + activeCount}
-                overdueCount={overdueCount}
-                completionPct={completionPct}
-                tablet={tablet}
-                showBills={showBills}
-                billsArea={billsArea}
-                followUps={followUps}
-                taskOverview={taskOverview}
-                navigation={navigation}
-              />
+              {canViewEnforcementOrganization && (
+                <Card style={styles.block} onPress={() => navigation.navigate('EnforcementOrganization')}>
+                  <View style={styles.cardHeadRow}>
+                    <Text style={styles.cardHeader}>Team Management</Text>
+                    <Text style={styles.cardLink}>View regions and teams ›</Text>
+                  </View>
+                  <Text style={styles.cardHint}>Review your scoped tax regions, districts, teams, supervisors, and officer assignments.</Text>
+                </Card>
+              )}
+
+              {isValOfficer
+                ? (
+                  <ValuationOfficerHome navigation={navigation} data={data} />
+                ) : isOfficer ? (
+                  <OfficerHome navigation={navigation} quickActions={quick} />
+                ) : isManager ? (
+                  <ManagerHome navigation={navigation} user={user} refreshKey={tick} />
+                ) : (
+                  <HeroBlock
+                    showBills={showBills}
+                    billsArea={billsArea}
+                    followUps={followUps}
+                    completedCount={completedCount}
+                    taskOverview={taskOverview}
+                    navigation={navigation}
+                  />
+                )}
 
               {currentPriority && (
                 <Card style={styles.block}>
@@ -326,7 +415,7 @@ export default function HomeScreen() {
                 </Card>
               )}
 
-              {quick.length > 0 && (
+              {!isOfficer && quick.length > 0 && (
                 <Card style={styles.block}>
                   <Text style={styles.cardHeader}>Quick Actions</Text>
                   <View style={[styles.qaGrid, tablet && styles.qaGridTablet]}>
@@ -370,88 +459,162 @@ export default function HomeScreen() {
                 </Card>
               )}
 
-              {isEnforcement && assignments.length > 0 ? (
-                <Card style={styles.block}>
-                  <View style={styles.cardHeadRow}>
+              {isEnforcement && (
+                assignments.length > 0 ? (
+                  <Card style={styles.block}>
+                    <View style={styles.cardHeadRow}>
+                      <Text style={styles.cardHeader}>Active Assignments</Text>
+                      <TouchableOpacity onPress={() => navigation.navigate('Tasks')} hitSlop={6}>
+                        <Text style={styles.cardLink}>View all ›</Text>
+                      </TouchableOpacity>
+                    </View>
+                    <Text style={styles.cardHint}>Ordered by urgency · Overdue, escalated, due soon first.</Text>
+                    {preview.slice(0, 8).map((a, i) => (
+                      <AssignmentRow key={a.id} item={a} onOpen={() => navigation.navigate('TaskDetail', { taskId: a.id, assignment: a })} divider={i > 0} />
+                    ))}
+                  </Card>
+                ) : (
+                  <Card style={styles.block}>
                     <Text style={styles.cardHeader}>Active Assignments</Text>
-                    <TouchableOpacity onPress={() => navigation.navigate('Tasks')} hitSlop={6}>
-                      <Text style={styles.cardLink}>View all ›</Text>
-                    </TouchableOpacity>
-                  </View>
-                  <Text style={styles.cardHint}>Ordered by urgency · Overdue, escalated, due soon first.</Text>
-                  {preview.slice(0, 8).map((a, i) => (
-                    <AssignmentRow key={a.id} item={a} onOpen={() => navigation.navigate('TaskDetail', { taskId: a.id, assignment: a })} divider={i > 0} />
-                  ))}
-                </Card>
-              ) : (
-                <Card style={styles.block}>
-                  <Text style={styles.cardHeader}>Active Assignments</Text>
-                  <Text style={styles.cardHint}>Your own task assignments will appear here.</Text>
-                  <EmptyRow />
-                </Card>
+                    <Text style={styles.cardHint}>Your own task assignments will appear here.</Text>
+                    <EmptyRow />
+                  </Card>
+                )
               )}
             </>
           )}
 
           {tab === 'Performance' && (
+            isManagementPerformance ? <ManagementPerformance refreshKey={tick} /> : (
             <>
-              <Card style={[styles.hero, tablet && styles.heroTablet]}>
-                <View style={styles.heroTop}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.heroTitle}>{hasTarget ? 'My Performance' : 'My Activity'}</Text>
-                    <Text style={styles.heroSub}>
-                      {hasTarget
-                        ? `Target ${fmtNum(perf.target_value)} · ${completionPct}% complete`
-                        : data.profile?.date || ''}
-                    </Text>
-                  </View>
-                  <View style={styles.heroPctWrap}>
-                    <Text style={styles.heroPct}>{hasTarget ? `${completionPct}%` : `${completedCount}`}</Text>
-                    <Text style={styles.heroPctLabel}>{hasTarget ? 'complete' : 'completed'}</Text>
-                  </View>
+              <Card style={[styles.block, styles.performanceCard]}>
+                <View style={styles.cardHeadRow}>
+                  <Text style={styles.cardHeader}>Overall Performance</Text>
+                  <TouchableOpacity onPress={refresh} hitSlop={6} disabled={refreshing}>
+                    <Text style={styles.cardLink}>{refreshing ? 'Refreshing…' : '⟳ Refresh'}</Text>
+                  </TouchableOpacity>
                 </View>
-                {hasTarget && (
-                  <View style={styles.heroBarTrack}>
-                    <View style={[styles.heroBarFill, { width: `${Math.min(completionPct, 100)}%` }]} />
+                {overall?.has_targets ? (
+                  <View style={styles.overallBox}>
+                    <View style={styles.overallTop}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.overallSub}>
+                          Achieved {fmtPerformanceNum(overall.achieved_value)} of {fmtPerformanceNum(overall.target_value)}
+                        </Text>
+                      </View>
+                      <View style={{ alignItems: 'flex-end' }}>
+                        <Text style={styles.overallPct}>{overallProgress.label}</Text>
+                        <Text style={styles.overallPctLabel}>overall progress</Text>
+                      </View>
+                    </View>
+                    {overallProgress.width !== null && (
+                      <View style={styles.overallBarTrack}>
+                        <View style={[styles.overallBarFill, { width: `${overallProgress.width}%` }]} />
+                      </View>
+                    )}
+                    <View style={styles.overallStatsRow}>
+                      <OverallStat label="Total achieved" value={fmtPerformanceNum(overall.achieved_value)} />
+                      <OverallStat label="Combined target" value={fmtPerformanceNum(overall.target_value)} />
+                      <OverallStat label="Targets included" value={fmtPerformanceNum(overall.targets_count)} />
+                    </View>
                   </View>
+                ) : overall ? (
+                  <Text style={styles.cardHint}>No approved performance targets for your account yet.</Text>
+                ) : (
+                  <Text style={styles.cardHint}>Overall performance is unavailable.</Text>
                 )}
-                <View style={[styles.heroStats, tablet && styles.heroStatsTablet]}>
-                  <HeroStat label="Target" value={hasTarget ? fmtNum(perf.target_value) : '—'} />
-                  <HeroStat label="Completed" value={fmtNum(completedCount)} />
-                  <HeroStat label="Pending" value={fmtNum(pendingCount + activeCount)} />
-                  <HeroStat label="Overdue" value={fmtNum(overdueCount)} />
-                  <HeroStat label="Completion" value={`${completionPct}%`} />
-                </View>
-                {Object.keys(indicators).filter((k) => !['visits', 'bills_delivered', 'payment_followups'].includes(k)).length > 0 && (
+              </Card>
+
+              <Card style={[styles.block, styles.performanceCard]}>
+                <Text style={styles.cardHeader}>Approved Targets{targets.length > 1 ? ` (${targets.length})` : ''}</Text>
+                {targets.length === 0 ? (
+                  <Text style={styles.cardHint}>
+                    {Array.isArray(perf.targets)
+                      ? 'No approved performance targets for your account yet.'
+                      : 'Target details are unavailable.'}
+                  </Text>
+                ) : (
+                  <>
+                    {targets.map((t, i) => {
+                      const progress = performanceProgress(t.completion_rate)
+                      const window = t.start_date || t.end_date
+                        ? `${fmtDay(t.start_date) || '—'} → ${fmtDay(t.end_date) || '—'}`
+                        : ''
+                      const meta = [t.section, t.frequency, window].filter(Boolean).join(' · ')
+                      return (
+                        <View key={t.id} style={[styles.targetRow, styles.targetCardRow, i > 0 && styles.rowBorder]}>
+                          <View style={styles.targetTop}>
+                            <View style={{ flex: 1 }}>
+                              <Text style={styles.targetMetric}>{metricLabel(t.metric)}</Text>
+                              <Text style={styles.targetMeta}>{meta || '—'}</Text>
+                            </View>
+                            <Badge status={t.status} label={t.status} />
+                          </View>
+                          <View style={styles.targetValues}>
+                            <Text style={styles.targetValueText}>
+                              {fmtPerformanceNum(t.achieved_value)} / {fmtPerformanceNum(t.target_value)}{t.measurement_unit ? ` ${t.measurement_unit}` : ''}
+                            </Text>
+                            <Text style={styles.targetPct}>{progress.label}</Text>
+                          </View>
+                          {progress.width !== null && (
+                            <View style={styles.targetBarTrack}>
+                              <View style={[styles.targetBarFill, { width: `${progress.width}%` }]} />
+                            </View>
+                          )}
+                        </View>
+                      )
+                    })}
+                  </>
+                )}
+              </Card>
+
+              {Object.keys(indicators).filter((k) => !['visits', 'bills_delivered', 'payment_followups'].includes(k)).length > 0 && (
+                <Card style={styles.block}>
+                  <Text style={styles.cardHeader}>Operational Metrics</Text>
+                  {(perf.window?.start || perf.window?.end) && (
+                    <Text style={styles.cardHint}>
+                      {fmtDay(perf.window.start) || '—'} → {fmtDay(perf.window.end) || '—'}
+                    </Text>
+                  )}
                   <View style={[styles.chipRow, tablet && styles.chipRowTablet]}>
                     {Object.entries(indicators)
                       .filter(([k]) => !['visits', 'bills_delivered', 'payment_followups'].includes(k))
                       .map(([k, ind]) => (
                         <View key={k} style={styles.chip}>
-                          <Text style={styles.chipValue}>{fmtNum(ind.value)}</Text>
+                          <Text style={styles.chipValue}>{fmtPerformanceNum(ind.value)}</Text>
                           <Text style={styles.chipLabel}>{ind.label.replace(/\s+/g, ' ')}</Text>
                         </View>
                       ))}
                   </View>
-                )}
-              </Card>
+                </Card>
+              )}
 
               {metricKeys.length > 0 && (
                 <Card style={styles.block}>
                   <Text style={styles.cardHeader}>Breakdown</Text>
-                  <Text style={styles.sectionLabel}>Period</Text>
-                <HScrollChips options={RANGES.map((r) => RANGE_LABEL[r])} value={RANGE_LABEL[range]} onChange={(lbl) => {
-                  const key = Object.keys(RANGE_LABEL).find((k) => RANGE_LABEL[k] === lbl)
-                  if (key) setRange(key)
-                }} />
-                <Text style={styles.sectionLabel}>Metric</Text>
-                <HScrollChips options={metricKeys} value={metric} onChange={selectMetric} colors={Object.fromEntries(metricKeys.map((k, i) => [k, CHART_COLORS[i % CHART_COLORS.length]]))} />
-                {groupOptions.length > 1 && (
-                  <>
-                    <Text style={styles.sectionLabel}>Group by</Text>
-                    <HScrollChips options={groupOptions.map((o) => o.key)} value={group} onChange={setGroup} />
-                  </>
-                )}
+                  <View style={styles.filterRow}>
+                    <FilterDropdown
+                      label="Period"
+                      options={RANGES.map((r) => ({ value: r, label: RANGE_LABEL[r] }))}
+                      value={range}
+                      onSelect={(v) => setRange(v || 'month')}
+                    />
+                    <FilterDropdown
+                      label="Metric"
+                      options={metricKeys.map((k) => ({ value: k, label: chartMetrics[k] || k.replace(/_/g, ' ') }))}
+                      value={metric || ''}
+                      onSelect={(v) => selectMetric(v || metricKeys[0])}
+                      color={theme.colors.info}
+                    />
+                    {groupOptions.length > 1 && (
+                      <FilterDropdown
+                        label="Group by"
+                        options={groupOptions.map((o) => ({ value: o.key, label: o.key.replace(/_/g, ' ') }))}
+                        value={group || ''}
+                        onSelect={setGroup}
+                      />
+                    )}
+                  </View>
                 {chartErr ? (
                   <Text style={{ color: theme.colors.danger, fontSize: 13, paddingVertical: 8 }}>{chartErr}</Text>
                 ) : !chart ? (
@@ -475,6 +638,7 @@ export default function HomeScreen() {
                 </Card>
               )}
             </>
+            )
           )}
 
           {tab === 'Activity' && (
@@ -538,38 +702,9 @@ export default function HomeScreen() {
   )
 }
 
-function HeroBlock({ hasTarget, perf, completedCount, pendingCount, overdueCount, completionPct, tablet, showBills, billsArea, followUps, taskOverview, navigation }) {
+function HeroBlock({ showBills, billsArea, followUps, completedCount, taskOverview, navigation }) {
   return (
     <>
-      <Card style={[styles.hero, tablet && styles.heroTablet]}>
-        <View style={styles.heroTop}>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.heroTitle}>{hasTarget ? 'My Performance' : 'My Activity'}</Text>
-            <Text style={styles.heroSub}>
-              {hasTarget
-                ? `Target ${fmtNum(perf.target_value)} · ${completionPct}% complete`
-                : `Pending ${fmtNum(pendingCount)} · Overdue ${fmtNum(overdueCount)}`}
-            </Text>
-          </View>
-          <View style={styles.heroPctWrap}>
-            <Text style={styles.heroPct}>{hasTarget ? `${completionPct}%` : `${completedCount}`}</Text>
-            <Text style={styles.heroPctLabel}>{hasTarget ? 'complete' : 'completed'}</Text>
-          </View>
-        </View>
-        {hasTarget && (
-          <View style={styles.heroBarTrack}>
-            <View style={[styles.heroBarFill, { width: `${Math.min(completionPct, 100)}%` }]} />
-          </View>
-        )}
-        <View style={[styles.heroStats, tablet && styles.heroStatsTablet]}>
-          <HeroStat label="Target" value={hasTarget ? fmtNum(perf.target_value) : '—'} />
-          <HeroStat label="Completed" value={fmtNum(completedCount)} />
-          <HeroStat label="Pending" value={fmtNum(pendingCount)} />
-          <HeroStat label="Overdue" value={fmtNum(overdueCount)} />
-          <HeroStat label="Completion" value={`${completionPct}%`} />
-        </View>
-      </Card>
-
       {showBills && (
         <Card style={styles.block}>
           <View style={styles.cardHeadRow}>
@@ -610,7 +745,7 @@ function EmptyRow() {
 
 function AssignmentRow({ item, onOpen, divider }) {
   const bill = item.property_bill || {}
-  const overdue = item.due_date && item.due_date.slice(0, 10) < new Date().toISOString().slice(0, 10)
+  const overdue = item.deadline_status?.is_overdue
   const title = bill.document_number || item.task_reference || `#${item.id}`
   return (
     <TouchableOpacity onPress={onOpen} activeOpacity={0.7} style={[styles.assignRow, divider && styles.rowBorder]}>
@@ -647,11 +782,11 @@ function AssignMeta({ icon, text, urgent }) {
   )
 }
 
-function HeroStat({ label, value }) {
+function OverallStat({ label, value }) {
   return (
-    <View style={styles.heroStat}>
-      <Text style={styles.heroStatValue}>{value}</Text>
-      <Text style={styles.heroStatLabel}>{label}</Text>
+    <View style={styles.overallStat}>
+      <Text style={styles.overallStatValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}>{String(value)}</Text>
+      <Text style={styles.overallStatLabel} numberOfLines={2}>{label}</Text>
     </View>
   )
 }
@@ -683,22 +818,7 @@ const styles = StyleSheet.create({
   tabLabelActive: { color: '#fff' },
 
   block: { marginTop: 12 },
-
-  hero: { backgroundColor: theme.colors.primary, borderRadius: 14, marginHorizontal: 16, marginTop: 12, marginBottom: 4, padding: 16 },
-  heroTablet: { marginHorizontal: 16 },
-  heroTop: { flexDirection: 'row', alignItems: 'center' },
-  heroTitle: { color: '#fff', fontSize: 17, fontWeight: '800' },
-  heroSub: { color: 'rgba(255,255,255,0.85)', fontSize: 12, marginTop: 2 },
-  heroPctWrap: { alignItems: 'center', marginLeft: 12 },
-  heroPct: { color: '#fff', fontSize: 30, fontWeight: '900' },
-  heroPctLabel: { color: 'rgba(255,255,255,0.85)', fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.4, fontWeight: '700' },
-  heroBarTrack: { height: 7, borderRadius: 6, backgroundColor: 'rgba(255,255,255,0.35)', marginTop: 12, overflow: 'hidden' },
-  heroBarFill: { height: '100%', borderRadius: 6, backgroundColor: '#fff' },
-  heroStats: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 12, gap: 12 },
-  heroStatsTablet: { gap: 10 },
-  heroStat: { minWidth: 72, flexGrow: 1, flexBasis: '18%' },
-  heroStatValue: { color: '#fff', fontSize: 16, fontWeight: '800' },
-  heroStatLabel: { color: 'rgba(255,255,255,0.85)', fontSize: 10.5, marginTop: 1, fontWeight: '600' },
+  performanceCard: { backgroundColor: theme.colors.white, borderColor: theme.colors.border },
 
   chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 4 },
   chipRowTablet: { gap: 8 },
@@ -737,6 +857,68 @@ const styles = StyleSheet.create({
   rowBorder: { borderTopWidth: 1, borderTopColor: theme.colors.border },
 
   sectionLabel: { fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.8, color: theme.colors.textLight, fontWeight: '800', marginTop: 12, marginBottom: 6 },
+  filterRow: { flexDirection: 'row', gap: 8, marginTop: 2 },
+  targetRow: { paddingVertical: 10 },
+  targetTop: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
+  targetMetric: { fontSize: 14, fontWeight: '800', color: theme.colors.white },
+  targetMeta: { fontSize: 11, color: '#E0E7FF', marginTop: 2, fontWeight: '700' },
+  targetValues: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 8 },
+  targetValueText: { fontSize: 12.5, fontWeight: '800', color: theme.colors.white },
+  targetPct: { fontSize: 13, fontWeight: '900', color: theme.colors.white },
+  targetBarTrack: { height: 6, borderRadius: 6, backgroundColor: 'rgba(255,255,255,0.35)', marginTop: 6, overflow: 'hidden' },
+  targetBarFill: { height: '100%', borderRadius: 6, backgroundColor: theme.colors.white },
+  targetCardRow: { marginHorizontal: -8, paddingHorizontal: 8, backgroundColor: '#151B54', borderRadius: 10 },
+  overallBox: {
+    backgroundColor: theme.colors.primary,
+    borderRadius: theme.radius.md,
+    padding: 12,
+    marginBottom: 8,
+  },
+  overallTop: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
+  overallLabel: {
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+    color: theme.colors.white,
+  },
+  overallSub: { fontSize: 12, color: theme.colors.white, marginTop: 3, fontWeight: '700' },
+  overallPct: { fontSize: 24, fontWeight: '900', color: theme.colors.white },
+  overallPctLabel: {
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+    color: theme.colors.primaryLight,
+  },
+  overallBarTrack: {
+    height: 8,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255,255,255,0.35)',
+    marginTop: 10,
+    overflow: 'hidden',
+  },
+  overallBarFill: { height: '100%', borderRadius: 8, backgroundColor: theme.colors.white },
+  overallStatsRow: { flexDirection: 'row', gap: 8, marginTop: 10 },
+  overallStat: {
+    flex: 1,
+    backgroundColor: '#151B54',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.25)',
+    borderRadius: theme.radius.sm,
+    paddingVertical: 6,
+    paddingHorizontal: 4,
+    alignItems: 'center',
+  },
+  overallStatValue: { fontSize: 14, fontWeight: '900', color: theme.colors.white },
+  overallStatLabel: {
+    fontSize: 10,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    color: theme.colors.white,
+    textAlign: 'center',
+    marginTop: 1,
+  },
   chartTitle: { fontSize: 13, fontWeight: '700', color: theme.colors.navy, textTransform: 'capitalize', marginBottom: 8 },
   sourceRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 12, paddingTop: 10, borderTopWidth: 1, borderTopColor: theme.colors.border },
   sourceText: { fontSize: 13, fontWeight: '700', color: theme.colors.primary },

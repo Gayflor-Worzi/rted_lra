@@ -91,7 +91,7 @@ export default function Login() {
           <p className="text-[11px] text-slate-400 border-l-2 border-navy-500 pl-3">{BRAND.notice}</p>
         </div>
         <div className="relative text-xs text-slate-400">
-          © {new Date().getFullYear()} {BRAND.org}. All rights reserved.
+          © {new Date().getFullYear()} Phoenix Consultant. All rights reserved.
         </div>
       </div>
 

@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\StaffTarget;
+use App\Models\User;
 use App\Services\TaskService;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
@@ -70,7 +71,7 @@ class TargetsController extends Controller
             'created_by' => $user->id,
         ]);
 
-        $this->tasks->notify(\App\Models\User::find($target->user_id), 'Performance target set', "A {$data['metric']} target for {$target->period} has been set for you.", 'targets');
+        $this->tasks->notify(User::find($target->user_id), 'Performance target set', "A {$data['metric']} target for {$target->period} has been set for you.", 'targets');
 
         return response()->json([
             'data' => $this->present($target->fresh(['user:id,full_name'])),
@@ -108,7 +109,7 @@ class TargetsController extends Controller
 
         $target->approve($user);
 
-        $this->tasks->notify(\App\Models\User::find($target->user_id), 'Target approved', "Your {$target->metric} target for {$target->period} is approved.", 'targets');
+        $this->tasks->notify(User::find($target->user_id), 'Target approved', "Your {$target->metric} target for {$target->period} is approved.", 'targets');
 
         return response()->json(['data' => $this->present($target->fresh()), 'message' => 'Target approved.']);
     }
@@ -142,7 +143,7 @@ class TargetsController extends Controller
         return $target->computeAchievedValue();
     }
 
-    private function applyVisibility(Builder $query, \App\Models\User $user): void
+    private function applyVisibility(Builder $query, User $user): void
     {
         $scope = $user->scopeLevel();
 

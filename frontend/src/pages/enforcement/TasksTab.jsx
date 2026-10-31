@@ -29,10 +29,12 @@ export default function TasksTab({ presetScope, presetGroup }) {
   const [drawerId, setDrawerId] = useState(null)
 
   const canTeam = can('tasks.view_section', 'tasks.view_division')
-  const canAll = can('tasks.view_division')
+  const canAll = can('tasks.view_division', 'enforcement.view_assignments')
 
   const load = (extra = {}) => {
-    const params = { view, per_page: 25, page: extra.page ?? page, ...(group ? { status_group: group } : {}), ...(q ? { q } : {}) }
+    // The Enforcement workspace is backend-scoped to enforcement task types,
+    // so non-enforcement desk work can never surface in this tab (§24).
+    const params = { view, workspace: 'enforcement', per_page: 25, page: extra.page ?? page, ...(group ? { status_group: group } : {}), ...(q ? { q } : {}) }
     api.get('/tasks', { params })
       .then((r) => setRows(unwrap(r).data))
       .catch((ex) => setErr(errMsg(ex)))
@@ -104,7 +106,7 @@ export default function TasksTab({ presetScope, presetGroup }) {
                     {cell(<Badge tone={PAYMENT_TONES[t.bill?.payment_status] || 'slate'}>{t.bill?.payment_status || '—'}</Badge>)}
                     {cell(<span className="text-xs text-slate-500">{t.assignment_status} · {t.assigned_to || 'unassigned'}</span>)}
                     {cell(<span className="text-slate-600 max-w-[200px] truncate block">{t.bill?.property_address || '—'}</span>)}
-                    {cell(<span className={`text-xs ${t.due_date && String(t.due_date).slice(0, 10) < new Date().toISOString().slice(0, 10) && !['Resolved', 'Closed', 'Paid'].includes(t.status) ? 'text-red-600 font-semibold' : 'text-slate-500'}`}>{fmtDate(t.due_date)}</span>)}
+                    {cell(<span className={`text-xs ${t.deadline_status?.is_overdue ? 'text-red-600 font-semibold' : 'text-slate-500'}`}>{fmtDate(t.due_date)}</span>)}
                     {cell(<div className="flex justify-end"><Btn tone="white" className="!px-3 !py-1.5" onClick={() => setDrawerId({ taskId: t.id, billId: t.bill?.id || t.reference_id })}>View</Btn></div>)}
                   </tr>
                 ))}

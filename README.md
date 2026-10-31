@@ -114,7 +114,7 @@ php artisan route:list
 - `appeals`, `me_queries` - Dispute & query system
 - `notifications`, `attachments` - Communication & files
 - `bill_followup_tasks`, `staff_targets` - Performance tracking
-- `registration_queue` - LITAS staging layer
+- `registration_queue` - property-registration staging layer
 - `audit_logs` - Full audit trail
 
 ## Troubleshooting

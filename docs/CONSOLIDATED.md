@@ -12,6 +12,11 @@
 3. User Manual (web console + mobile, role-by-role, troubleshooting)
 4. Bugs & Functionality Issues (prioritized with fixes)
 
+> **Status:** Discovery + Valuation content (module map, data model, workflows §2.1–2.2,
+> manual §3.2, bugs C2/C3/E1/E2/E13) reflect the rebuilt **spec-v4 controlled-routing**
+> backend. Other modules' descriptions may still reflect the prior build and are pending
+> re-verification.
+
 ---
 
 # PART 1 — SYSTEM ANALYSIS
@@ -21,7 +26,7 @@
 RETD_LRA is a three-tier property-tax administration platform:
 
 1. **Laravel API backend** — single source of business logic, holding two "sources of truth":
-   - **Master SSOT:** `property_bills` — canonical property/bill records synchronised with the legacy LITAS system.
+   - **Master SSOT:** `property_bills` — canonical property/bill records synchronised with the legacy source system.
    - **Sub-SSOT:** `discovered_properties` + `registration_queue` — field discoveries later promoted into the master record.
 2. **React web app** — office console for all roles (dashboard, bills, valuations, assessments, payments, discovery routing, registration, appeals, enforcement, M&E, notifications, staff targets, reports).
 3. **Expo mobile app** — field companion for Enforcement Officers (tasks, visits, discovery, receipt capture) with SQLite offline outbox.
@@ -35,14 +40,14 @@ RETD_LRA is a three-tier property-tax administration platform:
 | Module | Controller | Key endpoints | Notes |
 |---|---|---|---|
 | Auth | `Auth\api` | `POST /auth/login`, `GET /auth/me`, `POST /auth/logout`, `POST /auth/reset-password` | Login throttled 30/min; reset-password = first-login forced reset hook |
-| Property Bills | `PropertyBillsController` | CRUD `/property-bills`, `POST /{id}/delivery-stage`, `POST /{id}/amend`, `POST /litas-webhook-simulate` | **Master SSOT.** Delivery state machine; amendments only for Statutorily Overdue; LITAS sync writes only `outstanding_balance`/`payment_status` |
-| Valuations | `ValuationsController` | CRUD + `POST /{id}/submit`, `POST /{id}/review` | Two-stage approval (Manager → AC); anchors to bill **or** discovery (dual SSOT) |
+| Property Bills | `PropertyBillsController` | CRUD `/property-bills`, `POST /{id}/delivery-stage`, `POST /{id}/amend`, `POST /source-webhook-simulate` | **Master SSOT.** Delivery state machine; amendments only for Statutorily Overdue; source-system sync writes only `outstanding_balance`/`payment_status` |
+| Valuations | `ValuationsController` | CRUD + `POST /{id}/begin`·`submit`·`review`·`assign`·`decide`·`account-review`·`processing`·`complete`·`descriptions` | **Spec-v4 controlled workflow** (Assigned → … → Registered → Completed); mirrors linked discovery; never generates Document # / Property ID |
 | Tax Assessments | `TaxAssessmentsController` | CRUD | Requires Approved valuation; one active per property |
 | Tax Bills | `TaxBillsController` | CRUD | Requires Active assessment; one per assessment; `TB-YYYY-#####` |
 | Payments | `PaymentsController` | CRUD | Ledger of truth; `lockForUpdate`; recalculates bill, syncs `case_status` (Billed → Tax Cleared) |
 | Payment Verification | `PaymentVerificationsController` | `POST /enforcement/submit-receipt`, `GET /account/payment-verifications`, `POST /{id}/review` | Officer captures receipt → Account & Records verifies → mirrors truth to property bill |
-| Discovered Properties | `DiscoveredPropertiesController` | `GET/POST /enforcement/discovered`, `POST /{id}/route` | Sub-SSOT intake; routing to Accounts (RegistrationQueue) or Valuations |
-| Registration Queue | `RegistrationQueueController` | CRUD + `POST /{id}/claim`, `POST /{id}/complete`, `POST /{id}/reject` | Promotion step into Master SSOT |
+| Property Discovery | `DiscoveryController` (+ `EnforcementController::discover`) | `GET/POST /discoveries`, `GET /discoveries/stats`, `GET /property-profile`, `POST /discoveries/{id}/submit`·`resubmit`·`acct-review`·`val-review`·`account-processing`·`complete`·`reopen`, `POST /enforcement/discover` | **Spec-v4 controlled routing.** Auto-classification on submit → A&R Manager queue (account) or Valuation Manager queue (valuation); desk tasks; source-system identifiers recorded only at account-processing |
+| Registration Queue | *(superseded — see Property Discovery)* | — | Former promotion step; approved discoveries pass directly to Account & Record (source) processing |
 | Appeals | `AppealsController` | CRUD + `POST /{id}/review` | AC decision; adjustment cascades to assessment + unsettled bills |
 | M&E Queries | `MeQueriesController` | CRUD + `POST /{id}/respond`, `POST /{id}/close` | M&E tasking with assign/reassign notifications |
 | Staff Targets | `StaffTargetsController` | CRUD + `POST /{id}/refresh` | `achieved_value` restricted to custom metrics |
@@ -63,15 +68,17 @@ RETD_LRA is a three-tier property-tax administration platform:
 |---|---|---|
 | User | Staff accounts | `role_id`, `must_reset_password`, `is_active`, `section` |
 | Role | RBAC roles | `name`, `guard_name` |
-| PropertyBill | **Master SSOT** | `litas_billing_number/tin/property_id`, `property_address`, `case_status`, `outstanding_balance`, `payment_status`, `delivery_stage`, `account_staff_id`; `SYNC_MANAGED` fields excluded from direct writes |
+| PropertyBill | **Master SSOT** | `source_billing_number/tin/property_id`, `property_address`, `case_status`, `outstanding_balance`, `payment_status`, `delivery_stage`, `account_staff_id`; `SYNC_MANAGED` fields excluded from direct writes |
 | PropertyBillOwner | Owners | `tin`, `is_current`, `is_in_trust`, county/district/town, role |
-| Valuation | Dossier | Form1/Form2, `valuation_number` (year-scoped), land type, rate engine, `is_reassessment` |
-| ValuationItem / ValuationApproval | Lines / approval trail | stage, actor, notes |
+| Valuation | Dossier (spec v4) | `VAL-YYYY-#####`; 13-state controlled status; description roll-ups; manager/AC/account review trail; `registration_status`; never generates Document # / Property ID |
+| ValuationPropertyDescription / ValuationReview | Lines / review trail | `seq` + `computeValue()`; stage transitions + actor + notes |
+| Task | Unified desk task | task_type (Discovery Review, Valuation Manager Review, Valuation Review, AC Approval, A&R Manager Review, Account & Record Processing, Bill Delivery…), assigned_to, status, reference |
+| EvidencePhoto | GPS/camera evidence | `PHOTO-YYYY-#####`; morphable to discovery/valuation |
 | TaxAssessment / TaxBill | Assessed annual tax / billable | `annual_tax`; `TB-YYYY-#####`; ledger recalc |
-| Payment | Payment ledger | `litas_reference` unique |
+| Payment | Payment ledger | `source_reference` unique |
 | PaymentVerification | Receipt queue | Pending/Approved/Rejected |
-| DiscoveredProperty | Field discovery (Sub-SSOT) | Submitted_ME, Routed_Account/Valuation, Registered, Duplicate, Invalid, On_Hold, Contact_Made, Partly_Registered, Rejected |
-| RegistrationQueue | Promotion queue | `RQ-YYYY-#####`, claim/complete/reject |
+| PropertyDiscovery | Field discovery (Sub-SSOT, spec v4) | `ND-YYYY-#####`; controlled status vocabulary; `decision_path`; `classification_source`; `current_owner_id`; `aarm_*`/`ac_*`; `valuation_id` mirror; source-system identifiers set only at account-processing |
+| RegistrationQueue | *(superseded)* | former promotion queue |
 | EnforcementAssignment | Delinquent case + officer | escalation stages; incl. `Pending Payment Verification` |
 | EnforcementVisit | Field visit snapshot | `VIS-YYYY-#####`; snapshot fields |
 | EnforcementEvidence | **Empty shell** | id + timestamps only |
@@ -87,8 +94,8 @@ RETD_LRA is a three-tier property-tax administration platform:
 
 ## 1.4 Business-Logic Highlights
 
-- **Dual SSOT:** LITAS bills in `property_bills`; field discoveries in `discovered_properties` → route → `registration_queue` → complete (validates unique `litas_billing_number` + trust docs) → canonical master record created.
-- **Two-stage valuation:** Draft → Submitted (submit enforces doc compliance) → Pending AC Approval (Manager forwards) → Approved/Rejected (AC decides; approval syncs case to `Valuation Approved` or promotes the discovery).
+- **Controlled discovery routing (spec v4):** field capture → Draft → **auto-classified** on submit (`config/discovery.php`, by `property_classification`) → A&R Manager queue (account) or Valuation Manager queue (valuation) via desk tasks; source-system identifiers recorded only at account-processing; record never duplicated (Rule 11).
+- **Valuation chain (spec v4):** Assigned → Assessment in Progress → Submitted to Manager → **Valuation Manager** confirms/returns → Submitted to AC → **AC** approves/returns/rejects → **Account & Record Manager** final review → **A&R officer** records source identifiers → Registered → Completed. Linked discovery mirrors every step.
 - **Assessment→Bill→Payment:** Approved valuation → assessment → tax bill → payments recalc ledger → `case_status` sync (`Billed` on first payment — see bugs — then `Tax Cleared`).
 - **Receipt pipeline:** officer submits → `PaymentVerification(Pending)` (assignment paused) → Account & Records approve (mirror to master + audit) or reject (resume enforcement).
 - **Enforcement:** assign delinquent → visits (snapshot) → escalate ladder → `lra:statutory-overdue` sweep flips to `Statutorily Overdue` + notifies managers.
@@ -122,42 +129,49 @@ Roles: **System Administrator, Valuation Officer, Valuation Manager, Assistant C
 
 # PART 2 — WORKFLOWS
 
-## 2.1 Discovery to Master SSOT (registration)
+## 2.1 Property Discovery — Controlled Routing (spec v4)
 
 ```
-Enforcement Officer (field) — POST /enforcement/discovered
-  captures address, GPS, classification + 5 docs
-    (property_photo, ownership_legal_document, owner_passport_photo,
-     owner_official_id, property_schedule_form)
+Enforcement Officer (field) — POST /enforcement/discover
+  captures address, GPS, property_classification, owner, photos/evidence
         ▼
-DiscoveredProperty [Submitted_ME]
-  routed by Admin/M&E/Enforcement Manager — POST /discovered/{id}/route
-    ├─ "accounts"  → RegistrationQueue [Pending]
-    └─ "valuation" → Draft Valuation  (→ 2-stage approval → may auto-promote)
+PropertyDiscovery [Draft]      ND-YYYY-#####
+  submit — POST /discoveries/{id}/submit
+  AUTO-CLASSIFICATION (config/discovery.php, by property_classification):
+    Residential/Vacant Land/Agricultural/Government/Community → path "account"
+    Commercial/Industrial/Mixed Use/Institutional (default)  → path "valuation"
         ▼
-RegistrationQueue [Pending]  ← claim (POST /{id}/claim)
-        ▼
-Account Manager completes — POST /{id}/complete
-  { litas_tin, litas_property_id, litas_billing_number, notes }
-  validates unique billing number + trust docs
-        ▼
-PropertyBill [Master SSOT]  (promoteToMasterSSOT → Registered)
+  ├─ "account"  → [Awaiting Account Manager Review]   desk task → Account Manager
+  │    acct-review: approve → [Assigned to Account & Record]
+  │      account-processing (A&R officer, records source identifiers document_number/property_id)
+  │        → [Registered] → complete → [Completed]
+  │    acct-review: refer_to_valuation → [Referred to Valuation]
+  └─ "valuation" → [Awaiting Valuation]   desk task → Valuation Manager
+       val-review: assign → Valuation (VAL-YYYY-#####), discovery → [Under Valuation]
+       — discovery status thereafter mirrors the valuation (workflow 2)
 ```
 
-Guards: open duplicate entry rejected; unique `litas_billing_number` on completion.
+State machine: Draft → Submitted → Classified → Awaiting A&R Review / Awaiting
+Valuation → Assigned to Account & Record / Referred to Valuation → Processed in
+Registered → Completed. Alternates: Returned for Correction, Awaiting AC Approval,
+Approved, Rejected, Closed. Guards: duplicates rejected; source-system identifiers only
+at account-processing; record never duplicated (Rule 11).
 
-## 2.2 Valuation Approval (two-stage)
+## 2.2 Valuation — Manager → AC → Account & Record (spec v4)
 
 ```
-V.Officer create (anchor bill OR Routed_Valuation) → submit → [Submitted]
-V.Manager review {action:"forward"} ──────────────► [Pending AC Approval]
-AC review {action:"approve"|"reject", decision_notes}
-        ▼
- Approved → parent case_status="Valuation Approved"
-            OR discovery promoted to RegistrationQueue
+Path D: POST /valuations (standalone)          VAL-YYYY-#####
+Path B/C: created by Discovery val-review assign
+  begin        → [Assigned] → [Assessment in Progress]
+  descriptions → description rows roll up total_property_value / total_tax_payable
+  submit       → [Submitted to Manager]
+  review (ValMgr): confirm_ac → [Submitted to AC] | return → [Returned for Correction]
+  decide (AC): approve → [AC Approved] | reject → [AC Rejected] | return → [AC Returned]
+  account-review (Account Manager): approve(+officer) → [Sent to Account & Record]
+                                    | return → [AC Returned]
+  processing (A&R officer, records source-system identifiers) → [Registered]
+  complete → [Completed]     (linked discovery mirrors each step)
 ```
-
-Rate engine: `applyLraRate()` → `recalculateTotals()`; numbers year-scoped.
 
 ## 2.3 Assessment → Bill → Payment
 
@@ -234,6 +248,11 @@ Officer respond → [Answered] → close (raiser/M&E/Admin) → [Closed]
 | Role | Email | Password |
 |---|---|---|
 | System Administrator | `wooze27@gmail.com` | (set via `SEED_ADMIN_PASSWORD` on `db:seed`; random if unset) |
+| Account & Records Officer | `account.officer@test.lra` | `account123` |
+| Account Manager | `account.manager@test.lra` | `account123` |
+| Assistant Commissioner | `ac@test.lra` | `officer123` |
+| Valuation Manager | `val.manager@test.lra` | `officer123` |
+| Valuation Officer | `val.officer@test.lra` | `officer123` |
 | Enforcement Officer | `enf.officer@test.lra` | `officer123` |
 
 **Access:** Web console `http://localhost:5173` · Mobile: Expo Go, `exp://<LAN-IP>:8081` (same Wi-Fi as the PC).
@@ -246,11 +265,11 @@ Officer respond → [Answered] → close (raiser/M&E/Admin) → [Closed]
 
 **Property Bills (Admin / Account Mgr / Enf Mgr / M&E):** Bills screen = list + address search + pagination. Bill Detail shows owner/balances/status. Update case status (Admin/AcctMgr). **Advance delivery** through the state machine (above; overseas step optionally attaches return-copy proof). **Amend** only when `Statutorily Overdue` (amended doc ref + penalty/interest + notes).
 
-**Valuations (V.Officer / V.Manager / AC / Admin / M&E):** tabbed list by status. V.Officer = create (anchor bill or Routed_Valuation discovery), line items, submit (document compliance enforced). V.Manager = review & forward to AC. AC = approve/reject (syncs case or promotes discovery).
+**Valuations (V.Officer / V.Manager / AC / Account Manager / A&R Officer / Admin / M&E):** status-filtered list (**Awaiting Review** / **Awaiting AC** / **Awaiting Account & Record**). V.Officer = create dossier (standalone or anchored), property descriptions + evidence photos, **Begin**, **Submit**. V.Manager = **assign**, then **confirm → AC** or return. AC = approve/return/reject. Account Manager = final **account review** (assign A&R officer) or refer back. A&R Officer = **Registered** (records Document # / Property ID) → **Complete**. Linked discovery status mirrors each step.
 
-**Discovery & Routing (Admin / M&E / EnfMgr route):** Discovery screen lists `Submitted_ME`; route each to **Valuation** (draft) or **Accounts** (registration queue).
+**Discovery & Routing (controlled routing — Enf Officers intake; Account Manager / Valuation Manager desks):** field intake creates **Draft**; **Submit** auto-classifies by `property_classification` → **Account & Record Manager** queue (Residential/Vacant Land/Agricultural/Government/Community) or **Valuation Manager** queue (Commercial/Industrial/Mixed Use/Institutional). A&R Manager approves (→ A&R officer records source identifiers + completes) or refers to Valuation; Valuation Manager assigns → creates the valuation dossier.
 
-**Registration Queue (Admin / AcctMgr / ValMgr / M&E):** claim → complete (LITAS identifiers, promotes to Master SSOT) → or reject with reason.
+**Registration Queue:** **superseded** — approved discoveries pass directly to Account & Record (source) processing; no longer a routing destination.
 
 **Assessments & Bills (AcctMgr / Admin):** assessment against an **Approved** valuation (`annual_tax` ≠ null; one per property); bill against an **Active** assessment (`TB-YYYY-#####`; one per assessment).
 
@@ -327,8 +346,7 @@ Severity: **[CRIT]** blocks a feature/security · **[HIGH]** breaks an important
 - **D7 [LOW]** Dashboard omits M&E fields (`open_me_queries`, `delivered_bills_copies`).
 
 ## E. Backend logic / data integrity
-- **E1 [HIGH]** Valuation-number collision — `ValuationsController.php:444-456` (year max+1) vs `DiscoveredPropertiesController.php:199-200` (`count()+1` all years) → duplicate-key 500.
-- **E2 [HIGH]** Routed valuation drafts stranded — `route()` sets only `prepared_by_id`; officer can't edit/submit (ownership policy) → only Manager/Admin can unblock.
+- **E1–E2 [RESOLVED — spec v4 rebuild]** Valuation-number split + stranded routed drafts no longer apply (single `nextReference()` per sequence; `val-review` assigns at creation).
 - **E3 [HIGH]** Dead `account_staff_id` owner logic — `PropertyBillPolicy.php:24,41`, `TaxBillPolicy.php:24,41`; nothing sets it, so owner branches never fire.
 - **E4 [MED]** `case_status='Billed'` set on payment, not bill issue — `PaymentsController.php:131-132`.
 - **E5 [MED]** Audit-chain caveats — `AuditableObserver.php:57-65`: hash omits `old_values`/`ip_address`; backfill hashes JSON-string vs array at runtime (verification mismatch); no locking (fork risk).

@@ -38,44 +38,61 @@ class DatabaseSeeder extends Seeder
             'discovery.view', 'discovery.create', 'discovery.submit', 'discovery.capture_gps', 'discovery.upload_photo',
         ];
 
-        // Linked register access for roles that manage bill records.
+        // Linked register access for roles that manage bill registers.
         $recordsAccess = ['records.view'];
 
+        // Authority to produce an official document that leaves the system: a printed
+        // report, or a Property Record sheet carrying the property's photographs, TIN,
+        // GPS fix and value figures. property.export is deliberately kept on the same
+        // footing as reports.print so that "may take official output away from RETD"
+        // stays a single auditable decision rather than a per-role judgement repeated
+        // across a dozen grant lists — and so supervisors and field officers, who may
+        // open a property in the Property View, are not thereby entitled to export it.
+        $officialOutput = ['reports.print', 'property.export'];
+
         $grant('Assistant Commissioner', [
-            'reports.print',
+            ...$officialOutput,
             ...$recordsAccess,
             'discovery.view', 'discovery.review', 'discovery.classify',
             'discovery.route_to_account', 'discovery.route_to_valuation',
             'discovery.approve', 'discovery.reject', 'discovery.reopen',
-            'discovery.litas_processing',
+            'discovery.property_registration',
             'targets.approve',
             'me.assign_walkin', 'me.reassign', 'me.revise', 'me.flag_data_quality',
             'me.review', 'me.responsible',
             'enforcement.escalation_override', 'notifications.broadcast',
         ]);
         $grant('Account Manager', [
-            'reports.print',
+            ...$officialOutput,
             ...$recordsAccess,
-            ...$fieldDiscovery, 'discovery.route_to_account', 'discovery.litas_processing',
+            ...$fieldDiscovery,
+            'discovery.route_to_account', 'discovery.property_registration',
+            'discovery.aarm_review', 'discovery.aarm_approve', 'discovery.refer_to_valuation', 'discovery.assign',
+            'valuation.account_review', 'valuation.complete', 'valuation.property_registration',
             'targets.approve', 'me.reassign', 'me.flag_data_quality',
             'enforcement.escalation_override', 'me.responsible',
         ]);
         $grant('Account Supervisor', [...$recordsAccess, ...$fieldDiscovery, 'me.flag_data_quality']);
-        $grant('Account & Records Officer', [...$recordsAccess, ...$fieldDiscovery, 'me.flag_data_quality']);
+        $grant('Account & Records Officer', [
+            ...$recordsAccess, ...$fieldDiscovery,
+            'discovery.property_registration', 'discovery.assign',
+            'valuation.property_registration',
+            'me.flag_data_quality',
+        ]);
         $grant('Enforcement Manager', [
-            'reports.print', ...$recordsAccess, ...$fieldDiscovery, 'discovery.review',
+            ...$officialOutput, ...$recordsAccess, ...$fieldDiscovery, 'discovery.review',
             'targets.approve', 'me.assign_walkin', 'me.reassign', 'me.revise', 'me.flag_data_quality',
             'enforcement.escalation_override', 'me.review',
         ]);
         $grant('Enforcement Supervisor', [...$recordsAccess, ...$fieldDiscovery, 'discovery.review', 'me.assign_walkin', 'me.reassign', 'me.revise', 'me.flag_data_quality', 'enforcement.escalation_override']);
         $grant('Enforcement Officer', $fieldDiscovery);
         $grant('M&E Officer', [
-            'reports.print', 'discovery.view', ...$recordsAccess,
+            ...$officialOutput, 'discovery.view', ...$recordsAccess,
             'me.assign_walkin', 'me.reassign', 'me.revise', 'me.flag_data_quality',
             'me.review', 'me.responsible',
         ]);
         $grant('Valuation Manager', [
-            'reports.print', ...$recordsAccess,
+            ...$officialOutput, ...$recordsAccess,
             ...$fieldDiscovery, 'discovery.review', 'discovery.classify',
             'discovery.route_to_account', 'discovery.route_to_valuation',
             'targets.approve', 'me.flag_data_quality',
@@ -120,6 +137,14 @@ class DatabaseSeeder extends Seeder
             'default_scope' => $scope,
         ]);
 
+        // firstOrCreate() only applies the scope when the role is new, so a deliberate
+        // scope change would never reach an existing database. Reconcile it the same
+        // way the grants below are reconciled, otherwise a tightened scope looks
+        // applied but silently is not.
+        if ($role->default_scope !== $scope) {
+            $role->update(['default_scope' => $scope]);
+        }
+
         foreach ($grants as $g) {
             $role->grant($g);
         }
@@ -135,12 +160,14 @@ class DatabaseSeeder extends Seeder
             'bills.view', 'bills.history', 'bills.export',
             'tasks.view_division', 'tasks.view_section', 'tasks.view_own', 'tasks.view_history',
             'enforcement.view_assignments', 'enforcement.escalate',
+            'enforcement.org.review',
             'payments.view_queue', 'payments.view_history',
             'valuation.approve', 'valuation.reject', 'valuation.view_history',
-            'valuation.litas_processing', 'valuation.review',
+            'valuation.property_registration', 'valuation.review',
             'staff.view', 'staff.view_performance',
             'reports.view', 'reports.export', 'me.view', 'notifications.view', 'audit.view',
             'targets.view',
+            'gps.view', 'gps.update',
         ]);
         $this->role('Account Manager', 'ACCT', 'section', [
             'dashboard.view_section', 'dashboard.view_own',
@@ -152,7 +179,7 @@ class DatabaseSeeder extends Seeder
             'enforcement.view_assignments',
             'payments.view_queue', 'payments.review_receipt', 'payments.compare_receipt',
             'payments.verify', 'payments.reject', 'payments.view_history',
-            'valuation.litas_processing',
+            'valuation.property_registration',
             'staff.view', 'staff.create', 'staff.edit', 'staff.activate', 'staff.assign_role',
             'reports.view', 'reports.export', 'me.view', 'notifications.view',
             'targets.view', 'targets.create', 'targets.edit', 'targets.refresh',
@@ -177,15 +204,17 @@ class DatabaseSeeder extends Seeder
         ]);
         $this->role('Enforcement Manager', 'ENF', 'section', [
             'dashboard.view_section', 'dashboard.view_own',
-            'bills.view', 'bills.assign', 'bills.reassign', 'bills.history', 'bills.export',
-            'tasks.view_section', 'tasks.view_own', 'tasks.assign', 'tasks.reassign',
+            'bills.view', 'bills.history', 'bills.export',
+            'tasks.view_section', 'tasks.view_own',
             'tasks.priority', 'tasks.reopen', 'tasks.view_history',
             'enforcement.bill_delivery', 'enforcement.visit', 'enforcement.payment_followup',
             'enforcement.view_assignments', 'enforcement.issue_warning', 'enforcement.escalate',
+            'enforcement.org.recommend',
             'payments.view_queue', 'payments.view_history',
             'staff.view', 'staff.view_performance',
             'reports.view', 'reports.export', 'me.view', 'notifications.view', 'audit.view',
             'targets.view', 'targets.create', 'targets.edit', 'targets.refresh',
+            'gps.view', 'gps.update', 'enforcement.org.manage', 'enforcement.org.recommend',
         ]);
         $this->role('Enforcement Supervisor', 'ENF', 'team', [
             'dashboard.view_section', 'dashboard.view_own',
@@ -196,6 +225,8 @@ class DatabaseSeeder extends Seeder
             'enforcement.view_assignments', 'enforcement.issue_warning', 'enforcement.escalate',
             'payments.view_queue', 'payments.view_history',
             'staff.view', 'staff.view_performance', 'reports.view', 'notifications.view',
+            'gps.view', 'gps.approve', 'gps.review',
+            'enforcement.org.recommend',
         ]);
         $this->role('M&E Officer', 'ENF', 'division', [
             'dashboard.view_division', 'dashboard.view_section', 'dashboard.view_own',
@@ -207,7 +238,9 @@ class DatabaseSeeder extends Seeder
             'payments.view_queue', 'payments.view_history',
             'staff.view', 'staff.view_performance',
             'reports.view', 'reports.export', 'me.view', 'me.create', 'me.respond', 'me.close',
+            'me.assign_walkin', 'me.reassign', 'me.revise', 'me.flag_data_quality', 'me.review',
             'notifications.view', 'audit.view', 'targets.view',
+            'gps.view',
         ]);
         $this->role('Enforcement Officer', 'ENF', 'own', [
             'dashboard.view_own',
@@ -215,6 +248,7 @@ class DatabaseSeeder extends Seeder
             'enforcement.bill_delivery', 'enforcement.visit', 'enforcement.payment_followup',
             'enforcement.record_visit', 'enforcement.upload_evidence',
             'payments.claim',
+            'gps.capture', 'gps.certify',
             'notifications.view',
         ]);
         $this->role('Valuation Manager', 'VAL', 'section', [
@@ -227,7 +261,11 @@ class DatabaseSeeder extends Seeder
             'reports.view', 'me.view', 'notifications.view', 'audit.view',
             'targets.view', 'targets.create', 'targets.edit', 'targets.refresh',
         ]);
-        $this->role('Valuation Supervisor', 'VAL', 'team', [
+        // View-only across the staff they supervise, full conduct on their own records.
+        // The team scope let them open, edit and assess a colleague's valuation, which
+        // is a second, parallel process over the same record. Routing and review stay
+        // with the Valuation Manager, who holds section scope.
+        $this->role('Valuation Supervisor', 'VAL', 'team_view', [
             'dashboard.view_section', 'dashboard.view_own',
             'bills.view',
             'tasks.view_section', 'tasks.view_own', 'tasks.view_history',
@@ -254,20 +292,21 @@ class DatabaseSeeder extends Seeder
 
         $accounts = [
             ['name' => 'System Administrator', 'role' => 'System Administrator', 'section' => 'SYS', 'email' => 'wooze27@gmail.com', 'password' => $adminPassword],
+            ['name' => 'Account Manager', 'role' => 'Account Manager', 'section' => 'ACCT', 'email' => 'account.manager@test.lra', 'password' => 'account123'],
             ['name' => 'Account Officer', 'role' => 'Account & Records Officer', 'section' => 'ACCT', 'email' => 'account.officer@test.lra', 'password' => 'account123'],
-            ['name' => 'Enforcement Supervisor', 'role' => 'Enforcement Supervisor', 'section' => 'ENF', 'email' => 'enf.supervisor@test.lra', 'password' => 'officer123'],
+            ['name' => 'Assistant Commissioner', 'role' => 'Assistant Commissioner', 'section' => 'MGT', 'email' => 'ac@test.lra', 'password' => 'officer123'],
             ['name' => 'Enforcement Officer', 'role' => 'Enforcement Officer', 'section' => 'ENF', 'email' => 'enf.officer@test.lra', 'password' => 'officer123'],
-            ['name' => 'M&E Officer', 'role' => 'M&E Officer', 'section' => 'ENF', 'email' => 'me.officer@test.lra', 'password' => 'officer123'],
-            ['name' => 'Valuation Supervisor', 'role' => 'Valuation Supervisor', 'section' => 'VAL', 'email' => 'val.supervisor@test.lra', 'password' => 'officer123'],
+            ['name' => 'Valuation Manager', 'role' => 'Valuation Manager', 'section' => 'VAL', 'email' => 'val.manager@test.lra', 'password' => 'officer123'],
+            ['name' => 'Valuation Officer', 'role' => 'Valuation Officer', 'section' => 'VAL', 'email' => 'val.officer@test.lra', 'password' => 'officer123'],
         ];
 
-        // Only purge non-canonical users in non-production environments to avoid
-        // accidentally deleting real user accounts on a production db:seed.
-        if (! app()->isProduction()) {
-            User::whereNotIn('email', array_column($accounts, 'email'))->delete();
-        }
+        // NOTE: deliberately NON-destructive. We never delete users that are not
+        // in $accounts — a plain `db:seed` must not wipe imported/real staff accounts.
+        // Earlier versions purged non-canonical users here, which destroyed them on
+        // a local re-seed. Only firstOrCreate/updateOrCreate below runs against the
+        // canonical demo accounts.
 
-        $user = fn (array $a) => User::firstOrCreate(
+        $user = fn (array $a) => User::updateOrCreate(
             ['email' => $a['email']],
             [
                 'staff_id' => strtoupper(substr(md5($a['email']), 0, 6)),
@@ -284,10 +323,9 @@ class DatabaseSeeder extends Seeder
             $user($a);
         }
 
-        // Team wiring for supervisors (supervisor_id drives the `team` data scope).
+        // Team wiring for the one retained supervisor (supervisor_id drives the `team` data scope).
         $byEmail = fn (string $email) => User::where('email', $email)->value('id');
 
-        User::where('email', 'enf.officer@test.lra')->update(['supervisor_id' => $byEmail('enf.supervisor@test.lra')]);
-        User::where('email', 'me.officer@test.lra')->update(['supervisor_id' => $byEmail('enf.supervisor@test.lra')]);
+        User::where('email', 'account.officer@test.lra')->update(['supervisor_id' => $byEmail('account.manager@test.lra')]);
     }
 }

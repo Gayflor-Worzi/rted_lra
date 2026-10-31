@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\AuditLog;
+use App\Traits\SafeCsv;
 use Illuminate\Http\Request;
 
 /**
@@ -11,6 +12,8 @@ use Illuminate\Http\Request;
  */
 class AuditController extends Controller
 {
+    use SafeCsv;
+
     public function index(Request $request)
     {
         $user = $request->user();
@@ -66,12 +69,12 @@ class AuditController extends Controller
 
         $out = fopen('php://temp', 'r+');
         fwrite($out, "\xEF\xBB\xBF");
-        fputcsv($out, ['Audit Trail — All records']);
-        fputcsv($out, ['Generated '.now('Africa/Monrovia')->format('Y-m-d H:i').' by '.$user->full_name]);
-        fputcsv($out, []);
-        fputcsv($out, $headers);
+        $this->writeCsvRow($out, ['Audit Trail — All records']);
+        $this->writeCsvRow($out, ['Generated '.now('Africa/Monrovia')->format('Y-m-d H:i').' by '.$user->full_name]);
+        $this->writeCsvRow($out, []);
+        $this->writeCsvRow($out, $headers);
         foreach ($rows as $row) {
-            fputcsv($out, array_values($row));
+            $this->writeCsvRow($out, array_values($row));
         }
         rewind($out);
 

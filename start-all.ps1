@@ -1,6 +1,5 @@
-# ==========================================
+
 # 1. Environment & Path Setup
-# ==========================================
 $env:PATH = "C:\laragon\bin\nodejs\node-v22;" + $env:PATH
 
 $phpExe       = "C:\laragon\bin\php\php-8.3.30-Win32-vs16-x64\php.exe"
@@ -10,9 +9,7 @@ $mobileDir    = "C:\laragon\www\rted_lra\mobile"
 
 Write-Host "Restarting full stack environment..." -ForegroundColor Cyan
 
-# ==========================================
 # 2. Kill Active Processes on App Ports (Excluding current PID)
-# ==========================================
 $portsToClear = @(8000, 5173, 8081)
 
 foreach ($port in $portsToClear) {
@@ -23,27 +20,20 @@ foreach ($port in $portsToClear) {
     }
 }
 
-# ==========================================
 # 3. Start Laravel Backend (Visible Window for Debugging)
-# ==========================================
 Write-Host "Starting Laravel Backend..." -ForegroundColor Green
 Start-Process "powershell.exe" -ArgumentList "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", "cd '$laravelDir'; & '$phpExe' artisan serve --host=0.0.0.0 --port=8000"
 
-# ==========================================
 # 4. Start Vite Frontend
-# ==========================================
 Write-Host "Starting Vite Web Frontend..." -ForegroundColor Green
 Start-Process "powershell.exe" -ArgumentList "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", "`$env:PATH='$env:PATH'; cd '$frontendDir'; npm.cmd run dev"
 
-# ==========================================
+
 # 5. Start Expo Mobile App
-# ==========================================
 Write-Host "Starting Expo Mobile App..." -ForegroundColor Green
 Start-Process "powershell.exe" -ArgumentList "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", "`$env:PATH='$env:PATH'; cd '$mobileDir'; npx.cmd expo start"
 
-# ==========================================
 # 6. Open Web Browser
-# ==========================================
 Start-Sleep -Seconds 4
 Start-Process "http://localhost:5173"
 

@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\AuditLog;
 use App\Models\EnforcementVisit;
 use App\Models\PaymentVerification;
 use App\Models\PropertyBill;
@@ -35,6 +36,7 @@ class DataIntegrityService
             self::approvedValuationWithoutApproval(),
             self::completedDiscoveryWithoutProcessing(),
             self::staffTargetDrift(),
+            self::auditChainIntegrity(),
         ];
 
         $failed = array_filter($checks, fn ($check) => count($check['findings']) > 0);
@@ -221,7 +223,7 @@ class DataIntegrityService
 
         return self::check(
             'completed_discovery_without_processing',
-            'Completed discoveries missing the LITAS processing confirmation',
+            'Completed discoveries missing the registration confirmation',
             $discoveries,
             fn (PropertyDiscovery $d) => [
                 'id' => $d->id,
@@ -303,10 +305,57 @@ class DataIntegrityService
     }
 
     /**
+     * Recompose the audit hash chain and flag entries whose stored hash no longer
+     * matches the canonical serialization, or whose previous_hash link is broken.
+     * Covers the beta-reviewer §17 requirement that the audit chain remain valid.
+     */
+    private static function auditChainIntegrity(): array
+    {
+        $findings = [];
+        $prevHash = null;
+        $truncated = false;
+
+        AuditLog::query()->orderBy('id')->chunk(500, function ($logs) use (&$findings, &$prevHash, &$truncated) {
+            foreach ($logs as $log) {
+                if ($prevHash !== null && $log->previous_hash !== $prevHash) {
+                    $findings[] = [
+                        'id' => $log->id,
+                        'reference' => "{$log->action} #{$log->id}",
+                        'issue' => 'previous_hash does not chain to the prior entry',
+                    ];
+                }
+
+                if (! hash_equals((string) $log->hash, $log->computeHash())) {
+                    $findings[] = [
+                        'id' => $log->id,
+                        'reference' => "{$log->action} #{$log->id}",
+                        'issue' => 'stored hash does not match the recomputed canonical hash',
+                    ];
+                }
+
+                $prevHash = $log->hash;
+
+                if (count($findings) >= self::MAX_FINDINGS_PER_CHECK) {
+                    $truncated = true;
+
+                    return false;
+                }
+            }
+        });
+
+        return self::check(
+            'audit_chain_integrity',
+            'Audit entries with a broken hash link or tampered content',
+            $findings,
+            truncated: $truncated && count($findings) >= self::MAX_FINDINGS_PER_CHECK,
+        );
+    }
+
+    /**
      * Normalise a check result. `$source` may be an Eloquent collection (a
      * $formatter is then required) or a pre-built array of finding maps.
      */
-    private static function check(string $key, string $label, iterable $source, callable $formatter = null): array
+    private static function check(string $key, string $label, iterable $source, ?callable $formatter = null, ?bool $truncated = null): array
     {
         $findings = [];
 
@@ -322,7 +371,7 @@ class DataIntegrityService
             'key' => $key,
             'label' => $label,
             'count' => count($findings),
-            'truncated' => count($findings) >= self::MAX_FINDINGS_PER_CHECK,
+            'truncated' => $truncated ?? count($findings) >= self::MAX_FINDINGS_PER_CHECK,
             'findings' => array_slice($findings, 0, self::MAX_FINDINGS_PER_CHECK),
         ];
     }

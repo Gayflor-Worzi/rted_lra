@@ -1,9 +1,19 @@
 import { useEffect, useState } from 'react'
 import api, { unwrap, errMsg } from '../api'
 import { Card, Btn, Input, ErrorBox } from '../ui'
+import { useAuth } from '../auth'
 import { PROPERTY_CLASSIFICATIONS, PROPERTY_TYPES } from '../lib/constants'
 
+const F = ({ label, required, children }) => (
+  <div>
+    <label className="block text-xs font-semibold text-slate-600 mb-1.5">{label}{required && <span className="text-red-500"> *</span>}</label>
+    {children}
+  </div>
+)
+
 export default function BillCreate({ onClose, onCreated }) {
+  const { user } = useAuth()
+  const canAssignBill = ['Enforcement Manager', 'System Administrator'].includes(user?.role)
   const [users, setUsers] = useState([])
   const [err, setErr] = useState('')
   const [notice, setNotice] = useState('')
@@ -31,10 +41,11 @@ export default function BillCreate({ onClose, onCreated }) {
   })
 
   useEffect(() => {
-    api.get('/users', { params: { role: 'Enforcement Officer', per_page: 200 } })
-      .then((r) => setUsers(unwrap(r).data.data || []))
-      .catch(() => {})
-  }, [])
+    if (!canAssignBill) return
+    api.get('/lookup/enforcement-officers')
+      .then((r) => setUsers(unwrap(r).data || []))
+      .catch(() => { setUsers([]) })
+  }, [canAssignBill])
 
   const set = (k) => (e) => {
     let v = e.target.value
@@ -42,6 +53,31 @@ export default function BillCreate({ onClose, onCreated }) {
     if (k === 'assigned_enforcement_officer_id') v = e.target.value === '' ? '' : Number(e.target.value)
     setForm({ ...form, [k]: v })
   }
+
+  const setOfficer = (e) => {
+    const id = e.target.value === '' ? '' : Number(e.target.value)
+    setForm((f) => {
+      const officer = users.find((u) => u.id === id)
+      const next = { ...f, assigned_enforcement_officer_id: id }
+      if (officer) {
+        next.recipient_name = officer.full_name
+        next.recipient_contact = officer.phone || officer.email
+      }
+      return next
+    })
+  }
+
+  const pickRecipient = (e) => {
+    const name = e.target.value
+    const officer = users.find((u) => u.full_name === name)
+    setForm({ ...form, recipient_name: name, recipient_contact: officer ? (officer.phone || officer.email) : form.recipient_contact })
+  }
+
+  const officerAssigned = !!form.assigned_enforcement_officer_id
+  const officerContact = (() => {
+    const officer = users.find((u) => u.full_name === form.recipient_name)
+    return form.recipient_contact || (officer ? (officer.phone || officer.email) : '')
+  })()
 
   const total = (Number(form.tax_amount) || 0) + (Number(form.interest_charged) || 0) + (Number(form.penalty_charged) || 0)
 
@@ -66,13 +102,6 @@ export default function BillCreate({ onClose, onCreated }) {
     setBusy(false)
   }
 
-  const F = ({ label, required, children }) => (
-    <div>
-      <label className="block text-xs font-semibold text-slate-600 mb-1.5">{label}{required && <span className="text-red-500"> *</span>}</label>
-      {children}
-    </div>
-  )
-
   return (
     <div className="fixed inset-0 z-50 bg-black/40 overflow-y-auto" onClick={onClose}>
       <div className="min-h-full grid place-items-center p-4" onClick={(e) => e.stopPropagation()}>
@@ -80,7 +109,7 @@ export default function BillCreate({ onClose, onCreated }) {
           <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
             <div>
               <h2 className="font-bold text-navy-800">Log a bill</h2>
-              <p className="text-xs text-slate-400">Log Printed Bills from LITAS Here.</p>
+              <p className="text-xs text-slate-400">Log Printed Bills Here.</p>
             </div>
             <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-600 text-2xl leading-none px-2">×</button>
           </div>
@@ -95,10 +124,10 @@ export default function BillCreate({ onClose, onCreated }) {
                 <F label="Document #" required><Input className="w-full" value={form.document_number} onChange={set('document_number')} placeholder="e.g. 2026/12345" required /></F>
                 <F label="Property ID" required><Input className="w-full" value={form.property_id} onChange={set('property_id')} placeholder="e.g. 103458" required /></F>
                 <F label="TIN" required><Input className="w-full" value={form.tin} onChange={set('tin')} required /></F>
-                <F label="Direct assignment to officer"><select className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm bg-white" value={form.assigned_enforcement_officer_id} onChange={set('assigned_enforcement_officer_id')}>
+                {canAssignBill && <F label="Direct assignment to officer"><select className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm bg-white" value={form.assigned_enforcement_officer_id} onChange={setOfficer}>
                   <option value="">Walk-in / leave for enforcement queue</option>
                   {users.map((u) => <option key={u.id} value={u.id}>{u.full_name} ({u.staff_id})</option>)}
-                </select></F>
+                </select></F>}
               </div>
             </Card>
 
@@ -116,7 +145,7 @@ export default function BillCreate({ onClose, onCreated }) {
                   {PROPERTY_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
                 </select></F>
                 <F label="Tax period"><Input className="w-full" value={form.tax_period} onChange={set('tax_period')} /></F>
-                <F label="Assessed value (US$)"><Input className="w-full" type="number" min="0" value={form.assessed_value} onChange={set('assessed_value')} /></F>
+                <F label="Assessed value (US$)"><Input className="w-full" type="number" step="any" min="0" value={form.assessed_value} onChange={set('assessed_value')} /></F>
               </div>
             </Card>
 
@@ -124,7 +153,7 @@ export default function BillCreate({ onClose, onCreated }) {
               <div className="text-xs font-semibold text-slate-500 px-4 pt-4 uppercase tracking-wider">Property location (GPS)</div>
               <div className="grid sm:grid-cols-2 gap-4 p-4">
                 <F label="GPS coordinates"><Input className="w-full" value={form.gps_coordinate} onChange={set('gps_coordinate')} placeholder="lat,lng" /></F>
-                <F label="Accuracy (m)"><Input className="w-full" type="number" min="0" value={form.gps_accuracy} onChange={set('gps_accuracy')} placeholder="e.g. 12" /></F>
+                <F label="Accuracy (m)"><Input className="w-full" type="number" step="any" min="0" value={form.gps_accuracy} onChange={set('gps_accuracy')} placeholder="e.g. 12" /></F>
               </div>
             </Card>
 
@@ -140,8 +169,23 @@ export default function BillCreate({ onClose, onCreated }) {
             <Card className="!p-0 shadow-none border border-slate-100">
               <div className="text-xs font-semibold text-slate-500 px-4 pt-4 uppercase tracking-wider">Recipient &amp; remarks (optional)</div>
               <div className="grid sm:grid-cols-2 gap-4 p-4">
-                <F label="Recipient name"><Input className="w-full" value={form.recipient_name} onChange={set('recipient_name')} /></F>
-                <F label="Recipient contact"><Input className="w-full" value={form.recipient_contact} onChange={set('recipient_contact')} /></F>
+                <F label="Recipient name">
+                  {officerAssigned ? (
+                    <select className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm bg-white" value={form.recipient_name} onChange={pickRecipient}>
+                      <option value="">Select officer…</option>
+                      {users.map((u) => <option key={u.id} value={u.full_name}>{u.full_name} ({u.staff_id})</option>)}
+                    </select>
+                  ) : (
+                    <Input className="w-full" value={form.recipient_name} onChange={set('recipient_name')} />
+                  )}
+                </F>
+                <F label="Recipient contact">
+                  {officerAssigned ? (
+                    <div className="px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-sm text-slate-500">{officerContact || '—'}</div>
+                  ) : (
+                    <Input className="w-full" value={form.recipient_contact} onChange={set('recipient_contact')} />
+                  )}
+                </F>
                 <div className="sm:col-span-2">
                   <F label="Remarks"><Input className="w-full" value={form.remarks} onChange={set('remarks')} /></F>
                 </div>

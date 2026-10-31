@@ -42,6 +42,28 @@ api.interceptors.response.use(
 
 export const unwrap = (r) => r.data
 
+export const API_BASE = (import.meta.env.VITE_API_BASE || '/api/v1').replace(/\/+$/, '')
+
+/**
+ * Make an API-supplied URL safe to hand to `api.get()`.
+ *
+ * Endpoints return fully-qualified API paths such as
+ * `/api/v1/discoveries/1/evidence/1/file`. Passing that to the axios instance
+ * prepends baseURL a second time and the browser requests
+ * `/api/v1/api/v1/...`, which 404s — the image then renders as
+ * "Image unavailable" even though the file exists and the token is valid.
+ * Stripping the prefix leaves a path relative to baseURL.
+ */
+export const apiPath = (src) => {
+  if (!src) return src
+  // Already absolute: the browser fetches it directly, no auth header involved.
+  if (/^https?:\/\//i.test(src)) return src
+  const stripped = src.startsWith(`${API_BASE}/`) || src === API_BASE
+    ? src.slice(API_BASE.length)
+    : src
+  return stripped.startsWith('/') ? stripped : `/${stripped}`
+}
+
 /** Pull the human-readable message out of an axios error. */
 export const errMsg = (err, fallback = 'Something went wrong.') => {
   if (err?.response?.data?.message) return err.response.data.message

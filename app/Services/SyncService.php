@@ -21,6 +21,9 @@ class SyncService
         'visit' => 'enforcement_visits',
         'discovery' => 'property_discoveries',
         'action' => 'tasks',
+        'receipt' => 'payment_verifications',
+        'gps' => 'gps_location_history',
+        'evidence' => 'evidence_photos',
     ];
 
     /**

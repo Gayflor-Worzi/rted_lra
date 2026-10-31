@@ -28,7 +28,7 @@ return new class extends Migration
             $table->timestamps();
         });
 
-        // Appeals (taxpayer challenge against a LITAS bill)
+        // Appeals (taxpayer challenge against a source-system bill)
         Schema::create('appeals', function (Blueprint $table) {
             $table->id();
             $table->string('appeal_reference')->unique(); // APP-YYYY-#####

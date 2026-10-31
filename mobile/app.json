@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "RETD_LRA Field",
+    "name": "RETD Task Management Field",
     "slug": "retd-lra-field",
     "version": "1.0.4",
     "orientation": "portrait",
@@ -29,7 +29,14 @@
     "plugins": [
       "expo-location",
       "expo-image-picker",
-      "expo-font"
+      "expo-font",
+      [
+        "expo-sqlite",
+        {
+          "useSQLCipher": true
+        }
+      ],
+      "expo-secure-store"
     ],
     "extra": {
       "eas": {

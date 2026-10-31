@@ -1,9 +1,9 @@
-export function Card({ title, right, children, className = '' }) {
+export function Card({ title, right, children, className = '', headerClassName = '', titleClassName = '' }) {
   return (
     <div className={`bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden ${className}`}>
       {(title || right) && (
-        <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-100 bg-white">
-          <h2 className="font-semibold text-slate-800 flex items-center gap-2">
+        <div className={`flex items-center justify-between px-5 py-3.5 border-b border-slate-100 bg-white ${headerClassName}`}>
+          <h2 className={`font-semibold text-slate-800 flex items-center gap-2 ${titleClassName}`}>
             <span className="w-1 h-4 rounded bg-brand-500 inline-block" />
             {title}
           </h2>
@@ -15,16 +15,17 @@ export function Card({ title, right, children, className = '' }) {
   )
 }
 
-export function Stat({ label, value, tone = 'slate', icon }) {
+export function Stat({ label, value, tone = 'slate', icon, badge }) {
   const tones = {
     slate: 'text-navy-800', blue: 'text-brand-500', green: 'text-emerald-600',
     red: 'text-red-600', amber: 'text-amber-600', navy: 'text-navy-500',
   }
   return (
     <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 flex items-start justify-between">
-      <div>
+      <div className="min-w-0">
         <div className="text-xs uppercase tracking-wider text-slate-400">{label}</div>
         <div className={`text-2xl font-bold mt-1 ${tones[tone]}`}>{value}</div>
+        {badge && <span className="mt-1.5 inline-block px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide bg-slate-100 text-slate-500">{badge}</span>}
       </div>
       {icon && <div className="text-2xl opacity-80">{icon}</div>}
     </div>
@@ -68,8 +69,53 @@ export const billCaseTone = (s) => ({
 }[s] || 'slate')
 
 export const fmtMoney = (n) => 'US$ ' + Number(n ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+
+/**
+ * Property-value formatter. Unlike fmtMoney it never invents a zero: a missing
+ * assessment must read as "Not yet assessed" so an unassessed property is not
+ * presented as though it had been valued at US$0.00. A stored 0 is still shown
+ * as US$0.00, because a deliberate zero assessment and no assessment are
+ * different facts.
+ */
+export const fmtValue = (n, absent = 'Not yet assessed') => {
+  if (n === null || n === undefined || n === '') return absent
+  const num = Number(n)
+  if (Number.isNaN(num)) return String(n)
+  return 'US$ ' + num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+/**
+ * Editable-number formatter. Money and rate columns are stored as fixed-scale
+ * decimals, so the API hands back "1.5000" and "0.0250" for values an officer
+ * entered as 1.5 and 0.025. Trailing zeros are padding, not information, so they
+ * are trimmed for display and for number inputs — otherwise re-opening a saved
+ * form silently rewrites what was typed. Only trailing zeros are touched: the
+ * digits, the decimal point, and any leading minus survive, and an empty field
+ * stays empty rather than becoming "0".
+ */
+export const fmtNum = (n) => {
+  if (n === null || n === undefined || n === '') return ''
+  const s = String(n)
+  if (!s.includes('.')) return s
+  return s.replace(/0+$/, '').replace(/\.$/, '')
+}
+
 export const fmtDate = (d) => (d ? String(d).slice(0, 10) : '—')
 export const fmtTime = (d) => (d ? String(d).replace('T', ' ').slice(0, 16) : '—')
+
+/**
+ * A staff member's role name, whichever shape the endpoint used.
+ *
+ * The staff lookups return `role` as a plain string, while some payloads carry a
+ * nested role object. Reading `user.role.name` against a string yields
+ * undefined, which silently emptied the assignment dropdowns — every officer
+ * filtered out and the picker looked unpopulated. This tolerates both.
+ */
+export const roleName = (user) => {
+  const r = user?.role
+  if (!r) return ''
+  return typeof r === 'string' ? r : (r.name || '')
+}
+
 
 export const Spinner = ({ label = 'Loading…' }) => {
   return (

@@ -5,6 +5,7 @@ import { Badge, Btn, Spinner, billCaseTone, taskTone, fmtMoney, fmtDate, fmtTime
 import { useAuth } from '../auth'
 import { engagementInfo } from '../lib/constants'
 import { TaskLadder, TaskNextAction, RecordVisitModal, EngagementModal, SubmitReceiptModal, engagementOutcomeTone, fmtWhen } from './TaskUi'
+import PropertyDetail from './PropertyDetail'
 
 const TABS = ['Overview', 'Engagement', 'Payments', 'Evidence', 'Status History', 'Assignment', 'Audit']
 
@@ -41,7 +42,7 @@ function PhotoTile({ photo }) {
  * List first → view one task → take the next permitted action.
  */
 export default function BillDrawer({ billId, taskId, onClose, onChanged, embedded }) {
-  const { can } = useAuth()
+  const { user, can } = useAuth()
   const [bill, setBill] = useState(null)
   const [taskDetail, setTaskDetail] = useState(null)
   const [photos, setPhotos] = useState(null)
@@ -54,6 +55,7 @@ export default function BillDrawer({ billId, taskId, onClose, onChanged, embedde
   const [users, setUsers] = useState(null)
   const [assignTo, setAssignTo] = useState('')
   const [profile, setProfile] = useState(null)
+  const canAssignBill = ['Enforcement Manager', 'System Administrator'].includes(user?.role) && can('bills.assign')
 
   const loadRest = (b) => {
     api.get('/evidence/photos', { params: { bill_id: b.id, per_page: 50 } })
@@ -111,11 +113,11 @@ export default function BillDrawer({ billId, taskId, onClose, onChanged, embedde
   useEffect(() => { load() }, [billId, taskId]) // eslint-disable-line
 
   useEffect(() => {
-    if (!can('bills.assign')) return
+    if (!canAssignBill) return
     api.get('/users', { params: { role: 'Enforcement Officer', per_page: 200 } })
       .then((r) => setUsers(unwrap(r).data?.data || []))
       .catch(() => setUsers([]))
-  }, []) // eslint-disable-line
+  }, [canAssignBill]) // eslint-disable-line
 
   const canVisit = can('enforcement.record_visit')
   const isClosed = taskDetail ? ['Closed', 'Resolved', 'Paid'].includes(taskDetail.status) : false
@@ -235,7 +237,7 @@ export default function BillDrawer({ billId, taskId, onClose, onChanged, embedde
                   {task.deadline.milestone.overdue ? 'Overdue · ' : ''}{task.deadline.milestone.label} {fmtDate(task.deadline.milestone.date)}
                 </div>
               )}
-              {!taskDetail && can('tasks.assign', 'tasks.reassign') && (
+              {!taskDetail && canAssignBill && (
                 <button onClick={() => setTab('Assignment')} className="mt-2 px-4 py-2 rounded-xl bg-navy-50 text-navy-800 hover:bg-navy-100 text-sm font-semibold transition">
                   Assign an officer →
                 </button>
@@ -435,7 +437,7 @@ export default function BillDrawer({ billId, taskId, onClose, onChanged, embedde
             ))}
           </div>
 
-          {can('bills.assign') && (
+          {canAssignBill && (
             <form onSubmit={assign} className="rounded-xl border border-slate-200 p-4 space-y-3">
               <div className="text-xs font-semibold text-slate-600">Assign / reassign enforcement officer</div>
               <select value={assignTo} onChange={(e) => setAssignTo(e.target.value)} className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm bg-white">
@@ -537,8 +539,9 @@ export default function BillDrawer({ billId, taskId, onClose, onChanged, embedde
         <SubmitReceiptModal task={modal.task} onClose={() => setModal(null)} onSaved={() => { setModal(null); setNotice('Payment claim submitted.'); load(); onChanged?.() }} />
       )}
       {profile && (
-        <PropertyProfileModal
-          query={{ bill_id: profile.id, property_id: profile.property_id, document_number: profile.document_number }}
+        <PropertyDetail
+          propertyKey={{ bill_id: profile.id, property_id: profile.property_id, document_number: profile.document_number }}
+          title="Property lifecycle"
           onClose={() => setProfile(null)}
         />
       )}
@@ -577,138 +580,3 @@ function DrawerWrap({ onClose, children }) {
     </div>
   )
 }
-
-/**
- * Read-only unified property lifecycle view (spec §11/§17): for a given LITAS
- * bill/property it shows the linked Discovery record(s), Valuation record(s) and
- * the tax Bill itself — so account/enforcement users see one integrated picture
- * of the property rather than unrelated datasets. Pulled from /property-profile.
- */
-function PropertyProfileModal({ query, onClose }) {
-  const [data, setData] = useState(null)
-  const [err, setErr] = useState('')
-  useEffect(() => {
-    const params = {}
-    if (query.bill_id) params.bill_id = query.bill_id
-    if (query.property_id) params.property_id = query.property_id
-    if (query.document_number) params.document_number = query.document_number
-    api.get('/property-profile', { params })
-      .then((r) => setData(unwrap(r).data))
-      .catch((e) => setErr(errMsg(e)))
-  }, [query.bill_id, query.property_id, query.document_number])
-
-  const bills = data?.bills || []
-  const discoveries = data?.discoveries || []
-  const valuations = data?.valuations || []
-
-  return (
-    <div className="fixed inset-0 z-[60] bg-black/40 grid place-items-center p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-hidden flex flex-col">
-        <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
-          <h3 className="font-bold text-navy-800">Property lifecycle</h3>
-          <button onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-slate-100 text-slate-500 font-bold">✕</button>
-        </div>
-        <div className="flex-1 overflow-y-auto p-6 space-y-6">
-          {err && <p className="text-sm text-red-600">{err}</p>}
-          {!data && !err && <p className="text-sm text-slate-400">Loading property history…</p>}
-          {data && (
-            <>
-              <div>
-                <SectionLabel>LITAS Bill</SectionLabel>
-                {bills.length === 0 ? (
-                  <EmptyLine text="No registered bill for this property." />
-                ) : (
-                  <div className="space-y-2">
-                    {bills.map((b) => (
-                      <div key={b.id} className="rounded-xl border border-slate-200 px-4 py-3">
-                        <div className="flex flex-wrap gap-2 items-center">
-                          <span className="font-semibold text-navy-800">{b.document_number}</span>
-                          <Badge tone={billCaseTone(b.case_status)}>{b.case_status}</Badge>
-                          <Badge tone={paymentTone(b.payment_status)}>{b.payment_status}</Badge>
-                        </div>
-                        <div className="mt-2 grid grid-cols-2 sm:grid-cols-3 gap-2 text-sm">
-                          <Field label="Property ID" value={b.property_id} mono />
-                          <Field label="TIN" value={b.tin} mono />
-                          <Field label="Taxpayer" value={b.taxpayer_name} />
-                          <Field label="Total due" value={b.total_tax_due == null ? '—' : fmtMoney(b.total_tax_due)} />
-                          <Field label="Outstanding" value={b.outstanding_balance == null ? '—' : fmtMoney(b.outstanding_balance)} />
-                          <Field label="Date logged" value={b.date_logged ? fmtDate(b.date_logged) : '—'} />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <div>
-                <SectionLabel>Discovery / unregistered record</SectionLabel>
-                {discoveries.length === 0 ? (
-                  <EmptyLine text="No discovery record linked. This property was logged directly as a LITAS bill." />
-                ) : (
-                  <div className="space-y-2">
-                    {discoveries.map((d) => (
-                      <div key={d.id} className="rounded-xl border border-slate-200 px-4 py-3">
-                        <div className="flex flex-wrap gap-2 items-center">
-                          <span className="font-semibold text-navy-800">{d.discovery_reference}</span>
-                          <Badge tone={discoveryTone(d.status)}>{d.status}</Badge>
-                          {d.decision_path && <Badge tone="navy">Path {d.decision_path === 'valuation' ? 'B - Valuation' : 'A - Account'}</Badge>}
-                          {d.valuation_id && <Badge tone="blue">has valuation</Badge>}
-                        </div>
-                        <div className="mt-2 grid grid-cols-2 sm:grid-cols-3 gap-2 text-sm">
-                          <Field label="Owner" value={d.owner_name || '—'} />
-                          <Field label="Address" value={d.property_address || '—'} />
-                          <Field label="LITAS Property ID" value={d.property_id || '— (unregistered)'} mono />
-                          <Field label="LITAS Document #" value={d.document_number || '—'} mono />
-                          <Field label="Discovered" value={d.discovery_date ? fmtDate(d.discovery_date) : '—'} />
-                          <Field label="Discovered by" value={d.discovered_by || '—'} />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <div>
-                <SectionLabel>Valuation / reassessment history</SectionLabel>
-                {valuations.length === 0 ? (
-                  <EmptyLine text="No valuation / reassessment record for this property." />
-                ) : (
-                  <div className="space-y-2">
-                    {valuations.map((v) => (
-                      <div key={v.id} className="rounded-xl border border-slate-200 px-4 py-3">
-                        <div className="flex flex-wrap gap-2 items-center">
-                          <span className="font-semibold text-navy-800">{v.valuation_reference}</span>
-                          <Badge tone={valuationTone(v.status)}>{v.status}</Badge>
-                          <Badge tone={v.valuation_type === 'reassessment' ? 'amber' : 'slate'}>{v.valuation_type === 'reassessment' ? 'Reassessment' : 'New property'}</Badge>
-                        </div>
-                        <div className="mt-2 grid grid-cols-2 sm:grid-cols-3 gap-2 text-sm">
-                          <Field label="Property ID" value={v.property_id || '—'} mono />
-                          <Field label="Assessed value" value={v.assessed_value ? fmtMoney(v.assessed_value) : '—'} />
-                          <Field label="Approx annual tax" value={v.annual_tax ? fmtMoney(v.annual_tax) : '—'} />
-                          <Field label="Officer" value={v.valuation_officer || '—'} />
-                          <Field label="Date" value={v.created_at ? fmtDate(v.created_at) : '—'} />
-                          <Field label="LITAS" value={v.litas_processing_status || '—'} />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </>
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function SectionLabel({ children }) {
-  return <div className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">{children}</div>
-}
-
-function EmptyLine({ text }) {
-  return <p className="text-sm text-slate-400">{text}</p>
-}
-
-const discoveryTone = (s) => (['PROCESSED_IN_LITAS', 'COMPLETED'].includes(s) ? 'green' : s === 'AC_REJECTED' || s === 'RETURNED_FOR_CORRECTION' ? 'red' : 'navy')
-const valuationTone = (s) => (s === 'Approved' ? 'green' : s === 'Rejected' ? 'red' : s === 'Returned' ? 'amber' : 'navy')

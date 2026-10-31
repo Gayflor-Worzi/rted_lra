@@ -8,8 +8,8 @@ return new class extends Migration
 {
     /**
      * Valuation workflow: valuer prepares -> Supervisor -> Valuation Manager review
-     * -> AC approval -> Account Manager marks "Processed in LITAS" (confirmation,
-     * not integration).
+     * -> AC approval -> Account Manager records "Registered" (confirmation that the
+     * property was registered/reassessed in the source system, not integration).
      */
     public function up(): void
     {
@@ -42,7 +42,7 @@ return new class extends Migration
             $table->text('ac_remarks')->nullable();
             $table->unsignedBigInteger('ac_reviewed_by')->nullable();
             $table->timestamp('ac_reviewed_at')->nullable();
-            $table->string('litas_processing_status')->default('Pending'); // Pending | Processed in LITAS
+            $table->string('litas_processing_status')->default('Pending'); // Pending | Processed in source system — see rename_valuation_registration_columns
             $table->unsignedBigInteger('litas_processed_by')->nullable();
             $table->timestamp('litas_processed_at')->nullable();
             $table->text('remarks')->nullable();

@@ -1,5 +1,9 @@
 # RETD_LRA User Manual
 
+> **Status:** Sections 4–6 (Valuations, Discovery & Routing, Registration Queue) reflect the
+> rebuilt **spec-v4 controlled-routing** backend. Other sections may still describe the prior
+> build and are pending re-verification.
+
 Two applications are in use:
 
 1. **Web console** (office staff — all roles): `http://localhost:5173`
@@ -10,6 +14,11 @@ Common logins (demo data):
 | Role | Email | Password |
 |---|---|---|
 | System Administrator | `wooze27@gmail.com` | (set via `SEED_ADMIN_PASSWORD` on `db:seed`; random if unset) |
+| Account & Records Officer | `account.officer@test.lra` | `account123` |
+| Account Manager | `account.manager@test.lra` | `account123` |
+| Assistant Commissioner | `ac@test.lra` | `officer123` |
+| Valuation Manager | `val.manager@test.lra` | `officer123` |
+| Valuation Officer | `val.officer@test.lra` | `officer123` |
 | Enforcement Officer | `enf.officer@test.lra` | `officer123` |
 
 ---
@@ -34,19 +43,26 @@ Common logins (demo data):
 - **Amend a bill:** only permitted when the bill is `Statutorily Overdue`; enter the amended document reference, penalty and interest amounts, and notes.
 - **Search** filters by address.
 
-### 4. Valuations (Valuation Officer / Valuation Manager / Assistant Commissioner / Admin / M&E)
-- List tabbed by status: Submitted / Pending AC Approval / Approved / Rejected.
-- **Valuation Officer:** create a valuation dossier from the Valuation screen (must anchor it to an existing bill OR a discovery in `Routed_Valuation`), add line items, save, then **Submit** (compliance with required documents is enforced).
-- **Valuation Manager:** review submitted valuations and **forward** them to the AC.
-- **Assistant Commissioner:** approve or reject forwarded valuations; decisions sync the parent property case to `Valuation Approved` (or push the linked discovery into the registration queue).
+### 4. Valuations (Valuation Officer / Valuation Manager / Assistant Commissioner / Account Manager / A&R Officer / Admin / M&E)
+- List filtered by status: **Awaiting Review** (Submitted/Under Manager Review) · **Awaiting AC** · **Awaiting Account & Record** · plus the raw controlled statuses.
+- **Valuation Officer:** create a dossier (standalone, or anchored to a bill/discovery), add **property descriptions**, capture evidence photos, then **Begin** and **Submit** (compliance with required data is enforced).
+- **Valuation Manager:** **assign** submissions to officers; on submission **confirm → AC** or **return** for correction.
+- **Assistant Commissioner:** **approve / return / reject** AC-stage valuations.
+- **Account Manager:** final **account review** — approve (assign an A&R officer to process the registration) or refer back.
+- **Account & Records Officer:** mark the valuation **Registered** (records Document # / Property ID from the source system, never generated here), then **Complete**.
+- Each step mirrors the linked discovery's status and pushes a desk task to the next desk.
 
-### 5. Discovery & Routing (Enforcement Officers intake; Admin / M&E / Enforcement Manager route)
-- **Discovery screen** lists field discoveries in `Submitted_ME`.
-- **Route a discovery:** choose **Valuation** (creates a draft valuation for the Valuations section) or **Accounts** (pushes the property into the Registration Queue).
+### 5. Discovery & Routing (controlled routing — Enforcement Officer intake; Account Manager / Valuation Manager desks)
+- **Discovery screen** lists field discoveries; field officers capture them via the mobile app (`POST /enforcement/discover`) as `Draft`.
+- **Submit** a discovery and the system **auto-classifies** it by `property_classification`:
+  - Residential / Vacant Land / Agricultural / Government / Community → routed to the **Account & Record Manager** queue (registration path).
+  - Commercial / Industrial / Mixed Use / Institutional → routed to the **Valuation Manager** queue (valuation path).
+- **Account & Record Manager:** **approve** (→ an A&R officer records the source-system identifiers and completes) or **refer to Valuation**.
+- **Valuation Manager:** assign the discovery → creates a **Valuation** dossier; the discovery then tracks the valuation.
+- Document # / Property ID are source-system identifiers — RETD only records them at the Account & Record step.
 
-### 6. Registration Queue (Admin / Account Manager / Valuation Manager / M&E)
-- Pending submissions from both LITAS import and routed discoveries.
-- **Claim** a record to take ownership; **Complete** supplies the canonical LITAS identifiers (`litas_tin`, `litas_property_id`, `litas_billing_number`) which promotes the record into the Master SSOT; **Reject** records a reason.
+### 6. Registration Queue (superseded)
+- The former registration-queue promotion step is **no longer a routing destination**. Approved discoveries pass directly to **Account & Record processing** (source-system identifiers recorded there). See sections 4–5.
 
 ### 7. Tax Assessments & Bills (Account Manager / Admin)
 - Assessments: create against an **Approved** valuation with a non-null `annual_tax`; one active assessment per property.

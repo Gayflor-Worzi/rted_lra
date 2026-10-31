@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { useAuth } from '../auth'
 
-const IDLE_MS = (Number(import.meta.env.VITE_IDLE_MINUTES || 8) * 60) * 1000
+const IDLE_MIN = Number(import.meta.env.VITE_IDLE_MINUTES || 5)
+const IDLE_MS = (IDLE_MIN * 60) * 1000
 const COUNTDOWN_MS = 10 * 1000
 
 /**
- * Automatically signs the user out after 8 minutes of inactivity.
+ * Automatically signs the user out after the configured idle window of
+ * inactivity (default 5 minutes, overridable with VITE_IDLE_MINUTES).
  * Once the idle threshold is reached a 10-second countdown overlay appears
  * and any activity (or the "Stay signed in" button) resets the timer.
  */
@@ -48,6 +50,7 @@ export default function IdleGuard({ children }) {
   }, [])
 
   const secs = left === null ? 0 : Math.ceil(left / 1000)
+  const idleLabel = `${IDLE_MIN} minute${IDLE_MIN === 1 ? '' : 's'}`
 
   return (
     <>
@@ -58,7 +61,7 @@ export default function IdleGuard({ children }) {
             <div className="text-4xl mb-3">⏳</div>
             <h2 className="text-xl font-bold text-navy-800">Session timeout</h2>
             <p className="text-sm text-slate-500 mt-2">
-              You have been inactive for 8 minutes. Logging out in{' '}
+              You have been inactive for {idleLabel}. Logging out in{' '}
               <b>{secs}</b> {secs === 1 ? 'second' : 'seconds'}.
             </p>
             <button

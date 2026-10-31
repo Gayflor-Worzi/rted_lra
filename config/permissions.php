@@ -43,6 +43,9 @@ return [
     ['module' => 'enforcement', 'action' => 'issue_warning', 'name' => 'enforcement.issue_warning', 'description' => 'Issue 30-day / 72-hour warning'],
     ['module' => 'enforcement', 'action' => 'escalate', 'name' => 'enforcement.escalate', 'description' => 'Escalate case'],
     ['module' => 'enforcement', 'action' => 'escalation_override', 'name' => 'enforcement.escalation_override', 'description' => 'Bypass the 72-hour eligibility wait when approving an escalation'],
+    ['module' => 'enforcement', 'action' => 'org_manage', 'name' => 'enforcement.org.manage', 'description' => 'Manage Enforcement teams and officer memberships'],
+    ['module' => 'enforcement', 'action' => 'org_recommend', 'name' => 'enforcement.org.recommend', 'description' => 'Recommend officer membership changes within supervised Enforcement teams'],
+    ['module' => 'enforcement', 'action' => 'org_review', 'name' => 'enforcement.org.review', 'description' => 'Approve or reject Enforcement team and district structure changes'],
 
     // Payment Verification
     ['module' => 'payments', 'action' => 'claim', 'name' => 'payments.claim', 'description' => 'Submit payment claim'],
@@ -64,8 +67,10 @@ return [
     ['module' => 'valuation', 'action' => 'forward_ac', 'name' => 'valuation.forward_ac', 'description' => 'Forward to AC'],
     ['module' => 'valuation', 'action' => 'approve', 'name' => 'valuation.approve', 'description' => 'Approve valuation'],
     ['module' => 'valuation', 'action' => 'reject', 'name' => 'valuation.reject', 'description' => 'Reject valuation'],
-    ['module' => 'valuation', 'action' => 'litas_processing', 'name' => 'valuation.litas_processing', 'description' => 'Confirm processed in the source system'],
+    ['module' => 'valuation', 'action' => 'property_registration', 'name' => 'valuation.property_registration', 'description' => 'Confirm the property was registered / reassessed in the source system'],
     ['module' => 'valuation', 'action' => 'view_history', 'name' => 'valuation.view_history', 'description' => 'View valuation history'],
+    ['module' => 'valuation', 'action' => 'account_review', 'name' => 'valuation.account_review', 'description' => 'Account & Record Manager final review after AC approval'],
+    ['module' => 'valuation', 'action' => 'complete', 'name' => 'valuation.complete', 'description' => 'Mark valuation as completed'],
 
     // Staff
     ['module' => 'staff', 'action' => 'view', 'name' => 'staff.view', 'description' => 'View staff'],
@@ -94,20 +99,34 @@ return [
     // Records (linked record registers / drill-down)
     ['module' => 'records', 'action' => 'view', 'name' => 'records.view', 'description' => 'View linked record registers'],
 
-    // New Property Discovery (first-class workflow)
+    // Property Record export (A4 landscape print / PDF)
+    //
+    // Deliberately separate from the per-workflow *view* permissions. Being able to
+    // open a property in the Property View does not automatically entitle a user to
+    // carry an official-looking record sheet — and its photographs, TIN, GPS and
+    // value figures — out of the system as a file or a printout. Grant this on its
+    // own so that authorisation to inspect a record and authorisation to export it
+    // can be granted independently.
+    ['module' => 'property', 'action' => 'export', 'name' => 'property.export', 'description' => 'Print and download Property Record documents (PDF)'],
+
+    // New Property Discovery (first-class workflow — spec v4)
     ['module' => 'discovery', 'action' => 'view', 'name' => 'discovery.view', 'description' => 'View discoveries'],
     ['module' => 'discovery', 'action' => 'create', 'name' => 'discovery.create', 'description' => 'Create discovery'],
-    ['module' => 'discovery', 'action' => 'submit', 'name' => 'discovery.submit', 'description' => 'Submit discovery for review'],
+    ['module' => 'discovery', 'action' => 'submit', 'name' => 'discovery.submit', 'description' => 'Submit discovery for system classification and routing'],
     ['module' => 'discovery', 'action' => 'capture_gps', 'name' => 'discovery.capture_gps', 'description' => 'Capture discovery GPS'],
     ['module' => 'discovery', 'action' => 'upload_photo', 'name' => 'discovery.upload_photo', 'description' => 'Upload property photo'],
-    ['module' => 'discovery', 'action' => 'review', 'name' => 'discovery.review', 'description' => 'Review discovery'],
-    ['module' => 'discovery', 'action' => 'classify', 'name' => 'discovery.classify', 'description' => 'Classify property'],
-    ['module' => 'discovery', 'action' => 'route_to_account', 'name' => 'discovery.route_to_account', 'description' => 'Route to Account & Record'],
-    ['module' => 'discovery', 'action' => 'route_to_valuation', 'name' => 'discovery.route_to_valuation', 'description' => 'Route to Valuation'],
-    ['module' => 'discovery', 'action' => 'approve', 'name' => 'discovery.approve', 'description' => 'Approve discovery'],
+    ['module' => 'discovery', 'action' => 'review', 'name' => 'discovery.review', 'description' => 'Review discovery (management desk)'],
+    ['module' => 'discovery', 'action' => 'classify', 'name' => 'discovery.classify', 'description' => 'Classify property (management override)'],
+    ['module' => 'discovery', 'action' => 'route_to_account', 'name' => 'discovery.route_to_account', 'description' => 'Route to Account & Record (Path A / referral)'],
+    ['module' => 'discovery', 'action' => 'route_to_valuation', 'name' => 'discovery.route_to_valuation', 'description' => 'Route to Valuation (Path B / referral)'],
+    ['module' => 'discovery', 'action' => 'approve', 'name' => 'discovery.approve', 'description' => 'Approve discovery (management desk)'],
     ['module' => 'discovery', 'action' => 'reject', 'name' => 'discovery.reject', 'description' => 'Reject discovery'],
-    ['module' => 'discovery', 'action' => 'reopen', 'name' => 'discovery.reopen', 'description' => 'Reopen discovery'],
-    ['module' => 'discovery', 'action' => 'litas_processing', 'name' => 'discovery.litas_processing', 'description' => 'Confirm processed in the source system'],
+    ['module' => 'discovery', 'action' => 'reopen', 'name' => 'discovery.reopen', 'description' => 'Reopen rejected / returned discovery for correction'],
+    ['module' => 'discovery', 'action' => 'property_registration', 'name' => 'discovery.property_registration', 'description' => 'Complete property registration and record the source-system identifiers'],
+    ['module' => 'discovery', 'action' => 'aarm_review', 'name' => 'discovery.aarm_review', 'description' => 'Account & Record Manager final review (approve / return / refer to valuation / reject)'],
+    ['module' => 'discovery', 'action' => 'aarm_approve', 'name' => 'discovery.aarm_approve', 'description' => 'Account & Record Manager approve for property registration and officer assignment'],
+    ['module' => 'discovery', 'action' => 'refer_to_valuation', 'name' => 'discovery.refer_to_valuation', 'description' => 'Refer self-declared property from A&R desk to Valuation (Path C)'],
+    ['module' => 'discovery', 'action' => 'assign', 'name' => 'discovery.assign', 'description' => 'Assign a property record to an officer for property registration'],
 
     // M&E
     ['module' => 'me', 'action' => 'view', 'name' => 'me.view', 'description' => 'View M&E queries'],

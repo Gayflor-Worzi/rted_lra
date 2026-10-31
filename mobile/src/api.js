@@ -3,12 +3,16 @@ import { API_BASE } from './config'
 
 let tokenGetter = () => null
 let onUnauthorized = () => {}
+let identityGetter = () => null
 
 const api = axios.create({ baseURL: `${API_BASE}/api/v1`, timeout: 60000 })
 
 api.interceptors.request.use((cfg) => {
-  const t = tokenGetter()
-  if (t) cfg.headers.Authorization = `Bearer ${t}`
+  const t = cfg.headers?.Authorization ? null : tokenGetter()
+  if (t) {
+    cfg.headers.Authorization = `Bearer ${t}`
+    cfg.authUserId = identityGetter()
+  }
   cfg.headers.Accept = 'application/json'
   return cfg
 })
@@ -29,7 +33,7 @@ const canRetry = (config, err) => {
 api.interceptors.response.use(
   (r) => r,
   async (err) => {
-    if (err.response?.status === 401) onUnauthorized()
+    if (err.response?.status === 401) onUnauthorized(err.config)
     const config = err.config
     if (!config || !canRetry(config, err)) return Promise.reject(err)
     config.retryCount = (config.retryCount ?? 0) + 1
@@ -38,9 +42,10 @@ api.interceptors.response.use(
   }
 )
 
-export const configureAuth = (getter, logoutFn) => {
+export const configureAuth = (getter, logoutFn, getIdentity) => {
   tokenGetter = getter
   onUnauthorized = logoutFn
+  identityGetter = getIdentity || (() => null)
 }
 
 export default api

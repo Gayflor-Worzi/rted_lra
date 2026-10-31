@@ -198,9 +198,13 @@ Returns the authenticated officer's current assignments with nested `property_bi
 **Body:**
 | Field | Type | Required |
 |-------|------|----------|
-| action | string | "in_progress", "completed", or "escalate" |
+| action | string | "completed", "complete", or "escalate" |
 | visit_date | string | YYYY-MM-DD |
 | notes | string | no |
+
+Bill Delivery tasks may be completed only when their latest recorded visit has a
+`Delivered` delivery outcome. Recording the visit advances the task and bill;
+clients should not submit a separate completion action after the visit.
 
 ---
 
@@ -212,11 +216,75 @@ Returns the authenticated officer's current assignments with nested `property_bi
 | assignment_id | integer | yes |
 | property_bill_id | integer | yes |
 | status | string | yes (see frontend) |
-| bill_delivery_status | string | yes |
+| bill_delivery_status | string | no; `Delivered`, `Out for Delivery`, `Returned`, `Undelivered`, or `Not Mailable` |
 | gps_lat | number | no |
 | gps_lng | number | no |
 | proof_photo | string | no (file path) |
 | notes | string | no |
+
+The legacy `Returned to Office` value is normalized to `Returned`.
+
+### Enforcement organization management
+
+- `GET /enforcement/organization` — returns tax regions, tax districts, teams, active memberships, officers, and recommendations. Results are scoped for Enforcement Managers and regional Enforcement Supervisors. The Assistant Commissioner and System Administrator can view the organization data; the Administrator does not receive approval authority.
+- `POST /enforcement/organization/recommendations` — submits an organization change. Enforcement Managers can apply officer membership changes and regional Supervisor assignments directly. Structural changes and Manager-submitted team changes await Assistant Commissioner approval. Supervisor-submitted membership or team changes await the responsible Enforcement Manager.
+- `POST /enforcement/organization/recommendations/{id}/approve` — the responsible Enforcement Manager reviews Supervisor membership/team recommendations for their teams; the Assistant Commissioner reviews structural changes and Manager-submitted team changes.
+- `POST /enforcement/organization/recommendations/{id}/reject` — the corresponding reviewer rejects a recommendation. A reason is required.
+
+Each recommendation includes a `can_review` boolean calculated for the authenticated
+reviewer, so clients can show review controls only when the server recognizes the
+reviewer and organization scope as authorized.
+
+Supported `change_type` values:
+
+| Change type | Key fields | Review and effect |
+|---|---|---|
+| `create_region` | `name`, `code`, `classification` (`Rural` or `Urban`), optional `description`, `reason` | Manager submits; Assistant Commissioner approves |
+| `update_region` | `region_id`, optional `name`, `code`, `classification`, `description`, `is_active`, `reason` | Manager submits; Assistant Commissioner approves |
+| `assign_region_supervisor` | `region_id`, `supervisor_id`, optional `reason` | Manager applies immediately; one active primary Supervisor is assigned to the region |
+| `create_district` | `name`, optional `reason` | Manager submits; Assistant Commissioner approves |
+| `update_district` | `district_id`, optional `name`, `is_active`, `reason` | Manager submits; Assistant Commissioner approves |
+| `assign_districts_to_region` | `region_id`, `district_ids[]`, optional `reason` | Manager submits; Assistant Commissioner approves |
+| `create_team` | `name`, `district_ids[]`, `members[]`, optional `reason` | Manager submits; Assistant Commissioner approves |
+| `update_team` | `team_id`, optional `name`, `district_ids[]`, `is_active`, `reason` | Manager submits for Assistant Commissioner approval; regional Supervisor submits for responsible Manager approval |
+| `assign_officer` | `team_id`, `officer_id`, `primary_district_id`, `is_team_lead` | Manager applies immediately; Supervisor submits for responsible Manager approval |
+| `remove_officer` | `team_id`, `officer_id` | Manager applies immediately; Supervisor submits for responsible Manager approval |
+
+Each `create_team` request must include at least one initial `members` entry and
+exactly one Team Lead, for example:
+
+```json
+{
+  "change_type": "create_team",
+  "name": "Central Team",
+  "district_ids": [12, 13],
+  "members": [
+    { "officer_id": 41, "primary_district_id": 12, "is_team_lead": true },
+    { "officer_id": 42, "primary_district_id": 13, "is_team_lead": false }
+  ]
+}
+```
+
+All districts selected for a team must be active and assigned to the same
+active Tax Region; the region's active Supervisor is inherited by the team.
+Existing districts are not automatically classified or assigned to a region.
+Administrators may manage geography but do not acquire Manager or Commissioner
+decision authority. The mobile app provides a role-scoped, read-only view;
+organization changes and approvals remain in the web Team Management workspace.
+
+Enforcement Supervisors assign bills from the shared unassigned Bill Delivery
+queue, and may assign only to officers with an active membership in one of
+their own teams. They cannot reassign bills already assigned. Enforcement
+Managers retain read-only access to the enforcement register and queue.
+Assignments require an active team membership and primary district. A bill's
+primary tax district is copied from the officer's active membership only on
+explicit assignment. Existing bills are not backfilled and are not
+automatically changed when team memberships change.
+
+The Enforcement manager dashboard's delivery donut and visit delivery summary
+use visit records only. Delivery outcome categories are `Delivered`, `Out for
+Delivery`, `Returned`, `Undelivered`, and `Not Mailable`; the chart total is the
+count of visits with one of those outcomes.
 
 ---
 
@@ -275,9 +343,9 @@ Returns the authenticated officer's current assignments with nested `property_bi
 **Body:**
 | Field | Type | Required |
 |-------|------|----------|
-| litas_tin | string | yes |
-| litas_property_id | string | yes |
-| litas_billing_number | string | yes |
+| source_tin | string | yes |
+| source_property_id | string | yes |
+| source_billing_number | string | yes |
 | notes | string | no |
 
 ---
@@ -288,7 +356,7 @@ Returns the authenticated officer's current assignments with nested `property_bi
 
 ---
 
-## 8. Payments (LITAS)
+## 8. Payments (source)
 
 ### `POST /payments/track`
 
@@ -319,6 +387,24 @@ Returns payment history for a bill.
   }
 }
 ```
+
+---
+
+### `GET /dashboard/performance/management`
+
+Returns aggregated operational performance for Account, Valuation, and Enforcement Managers; their corresponding Supervisors; and the Assistant Commissioner. Individual performance remains available to operational staff, including Enforcement Team Leads.
+
+Approved targets are grouped by metric, measurement unit, and exact target window. For staff assignment changes within a target window, the target denominator is allocated by inclusive calendar days and eligible achievements are attributed by the event date. Metrics without a live target calculation are reported as unsupported rather than as zero. Historical periods before recorded organizational history are marked limited.
+
+The response contains `scope`, `scope_label`, `period_basis`, `periods` (eligible target, achievement, completion rate, staff/target counts, and attribution state), `unsupported_metrics`, and overall attribution status. The endpoint is restricted to mapped management roles.
+
+### `GET /reports/management/performance`
+
+Returns the same management-performance calculation used by the dashboard.
+
+### `GET /reports/management/performance/export?format=csv|pdf`
+
+Exports the same management performance groups as CSV or PDF. The personal `/reports/my/performance` endpoints are not available to management roles.
 
 ---
 
@@ -357,7 +443,7 @@ Marks all notifications as read.
 | ID | Role | Key Permissions |
 |----|------|----------------|
 | 1 | Admin | Full system access |
-| 2 | Account Manager | Case status control, bill amendments, user creation (Officer only), LITAS registration |
+| 2 | Account Manager | Case status control, bill amendments, user creation (Officer only), property registration |
 | 3 | Assistant Commissioner | Valuation final approval/rejection |
 | 4 | Valuation Manager | Valuation creation, first-stage review, routing |
 | 5 | Valuation Officer | Valuation line-item editing |

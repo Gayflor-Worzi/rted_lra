@@ -1,6 +1,6 @@
 import 'react-native-gesture-handler'
 import { StatusBar } from 'expo-status-bar'
-import { Text, View } from 'react-native'
+import { ActivityIndicator, Text, View } from 'react-native'
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { NavigationContainer } from '@react-navigation/native'
 import { createNativeStackNavigator } from '@react-navigation/native-stack'
@@ -13,12 +13,15 @@ import IdleGate from './src/components/IdleGate'
 import LoginScreen from './src/screens/LoginScreen'
 import ResetPasswordScreen from './src/screens/ResetPasswordScreen'
 import TasksScreen from './src/screens/TasksScreen'
+import AccountTasksScreen from './src/screens/AccountTasksScreen'
+import WorkspaceTasksScreen from './src/screens/WorkspaceTasksScreen'
 import TaskDetailScreen from './src/screens/TaskDetailScreen'
 import VisitFormScreen from './src/screens/VisitFormScreen'
 import DiscoverScreen from './src/screens/DiscoverScreen'
 import NewDiscoveryScreen from './src/screens/NewDiscoveryScreen'
 import DiscoveryDetailScreen from './src/screens/DiscoveryDetailScreen'
 import HomeScreen from './src/screens/HomeScreen'
+import BillsScreen from './src/screens/BillsScreen'
 import ReceiptScreen from './src/screens/ReceiptScreen'
 import OutboxScreen from './src/screens/OutboxScreen'
 import ValuationScreen from './src/screens/ValuationScreen'
@@ -26,6 +29,8 @@ import NewValuationScreen from './src/screens/NewValuationScreen'
 import ValuationDetailScreen from './src/screens/ValuationDetailScreen'
 import PaymentsScreen from './src/screens/PaymentsScreen'
 import NoticesScreen from './src/screens/NoticesScreen'
+import GpsCertifyScreen from './src/screens/GpsCertifyScreen'
+import EnforcementOrganizationScreen from './src/screens/EnforcementOrganizationScreen'
 
 const Stack = createNativeStackNavigator()
 const Tab = createBottomTabNavigator()
@@ -33,6 +38,7 @@ const Tab = createBottomTabNavigator()
 const TABS = {
   Home: { icon: '🏠', label: 'Home' },
   Tasks: { icon: '📋', label: 'Tasks' },
+  Bills: { icon: '🧾', label: 'Bills' },
   Discover: { icon: '📍', label: 'Discoveries' },
   Verifications: { icon: '🧾', label: 'Verify' },
   Valuations: { icon: '🏷️', label: 'Valuations' },
@@ -56,18 +62,52 @@ function TabNav() {
   const { user } = useAuth()
   const insets = useSafeAreaInsets()
 
-  const tabs = [
-    <Tab.Screen name="Home" component={HomeScreen} />,
-    <Tab.Screen name="Tasks" component={TasksScreen} />,
-    <Tab.Screen name="Discover" component={DiscoverScreen} />,
-    ...(hasAny(user, ['payments.verify', 'payments.reject'])
-      ? [<Tab.Screen key="verifications" name="Verifications" component={PaymentsScreen} />]
-      : []),
-    ...(hasAny(user, ['valuation.create', 'valuation.review', 'valuation.view_history'])
-      ? [<Tab.Screen key="valuations" name="Valuations" component={ValuationScreen} />]
-      : []),
-    <Tab.Screen name="Sync" component={OutboxScreen} />,
-  ]
+  // Account & Records staff get their native "My Tasks" module BESIDE the
+  // bill register — their enforcement button becomes an account-processing queue
+  // (same "Tasks" name so Home quick actions keep routing correctly).
+  const isAccount = ['Account & Records Officer', 'Account Supervisor', 'Account Manager'].includes(user?.role)
+  const isAC = user?.role === 'Assistant Commissioner'
+  const isValuation = ['Valuation Officer', 'Valuation Supervisor', 'Valuation Manager'].includes(user?.role)
+
+  const tabs =
+    isAccount
+      ? [
+          <Tab.Screen name="Home" component={HomeScreen} />,
+          <Tab.Screen key="tasks" name="Tasks" component={AccountTasksScreen} />,
+          <Tab.Screen key="bills" name="Bills" component={BillsScreen} />,
+          <Tab.Screen name="Discover" component={DiscoverScreen} />,
+          ...(hasAny(user, ['payments.verify', 'payments.reject'])
+            ? [<Tab.Screen key="verifications" name="Verifications" component={PaymentsScreen} />]
+            : []),
+          <Tab.Screen name="Sync" component={OutboxScreen} />,
+        ]
+      : isAC || isValuation
+        ? [
+            <Tab.Screen name="Home" component={HomeScreen} />,
+            <Tab.Screen key="tasks" name="Tasks" component={WorkspaceTasksScreen}
+              initialParams={
+                isAC
+                  ? { workspace: 'ac', subtitle: 'Assistant Commissioner approvals' }
+                  : { workspace: 'valuation', subtitle: 'Valuation manager & officer desk' }
+              } />,
+            <Tab.Screen name="Discover" component={DiscoverScreen} />,
+            ...(hasAny(user, ['valuation.create', 'valuation.review', 'valuation.view_history'])
+              ? [<Tab.Screen key="valuations" name="Valuations" component={ValuationScreen} />]
+              : []),
+            <Tab.Screen name="Sync" component={OutboxScreen} />,
+          ]
+        : [
+            <Tab.Screen name="Home" component={HomeScreen} />,
+            <Tab.Screen key="tasks" name="Tasks" component={TasksScreen} />,
+            <Tab.Screen name="Discover" component={DiscoverScreen} />,
+            ...(hasAny(user, ['payments.verify', 'payments.reject'])
+              ? [<Tab.Screen key="verifications" name="Verifications" component={PaymentsScreen} />]
+              : []),
+            ...(hasAny(user, ['valuation.create', 'valuation.review', 'valuation.view_history'])
+              ? [<Tab.Screen key="valuations" name="Valuations" component={ValuationScreen} />]
+              : []),
+            <Tab.Screen name="Sync" component={OutboxScreen} />,
+          ]
 
   return (
     <Tab.Navigator
@@ -94,8 +134,28 @@ function TabNav() {
 }
 
 function RootNav() {
-  const { token, user } = useAuth()
+  const { token, user, loading, initError } = useAuth()
   const authenticated = !!token && !!user
+
+  if (loading) {
+    return (
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: theme.colors.bg }}>
+        <ActivityIndicator size="large" color={theme.colors.primary} />
+        <Text style={{ marginTop: 12, color: theme.colors.textMuted }}>Securing offline storage…</Text>
+      </View>
+    )
+  }
+
+  if (initError) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', padding: 24, backgroundColor: theme.colors.bg }}>
+        <Text accessibilityRole="alert" style={{ color: theme.colors.danger, fontWeight: '800', fontSize: 16 }}>
+          Secure offline storage could not be initialized.
+        </Text>
+        <Text style={{ marginTop: 8, color: theme.colors.textMuted }}>{initError}</Text>
+      </View>
+    )
+  }
 
   const detailHeader = (title) => ({
     title,
@@ -125,6 +185,8 @@ function RootNav() {
           <Stack.Screen name="DiscoveryDetail" component={DiscoveryDetailScreen} options={detailHeader('Discovery Detail')} />
           <Stack.Screen name="ValuationDetail" component={ValuationDetailScreen} options={detailHeader('Valuation Detail')} />
           <Stack.Screen name="NewValuation" component={NewValuationScreen} options={detailHeader('New Assessment')} />
+          <Stack.Screen name="GpsCertify" component={GpsCertifyScreen} options={detailHeader('Certify GPS')} />
+          <Stack.Screen name="EnforcementOrganization" component={EnforcementOrganizationScreen} options={detailHeader('Team Management')} />
         </>
       )}
     </Stack.Navigator>

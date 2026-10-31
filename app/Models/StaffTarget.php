@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Carbon;
 
 /**
  * Staff performance target. Indicators are configurable per staff function;
@@ -50,6 +51,26 @@ class StaffTarget extends Model
     ];
 
     public const FREQUENCIES = ['Daily', 'Weekly', 'Monthly', 'Quarterly', 'Annual'];
+
+    public const COMPUTED_METRICS = [
+        'bills_logged',
+        'bills_processed',
+        'payment_verifications',
+        'records_amended',
+        'data_quality_completed',
+        'bills_delivered',
+        'visits',
+        'payment_followups',
+        'reminder_notices',
+        'hour_72_demands',
+        'enforcement_cases',
+        'completed_tasks',
+        'valuations',
+        'reassessments',
+        'valuation_corrections',
+        'approved_valuations',
+        'collections_amount',
+    ];
 
     protected $fillable = [
         'user_id',
@@ -110,7 +131,7 @@ class StaffTarget extends Model
      * explicit dates when set, otherwise the naturally applicable period for
      * the target frequency (today / current week / month / quarter / year).
      *
-     * @return array{\Illuminate\Support\Carbon, \Illuminate\Support\Carbon}
+     * @return array{Carbon, Carbon}
      */
     public function effectiveWindow(): array
     {

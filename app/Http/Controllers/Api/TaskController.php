@@ -3,11 +3,15 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\EvidencePhoto;
+use App\Models\Notification;
 use App\Models\PropertyBill;
 use App\Models\Task;
 use App\Models\TaskEngagement;
 use App\Models\User;
+use App\Services\AssignmentEligibilityService;
 use App\Services\AuditService;
+use App\Services\SectionWorkspaceService;
 use App\Services\TaskService;
 use App\Services\TaskWorkflowService;
 use Illuminate\Http\Request;
@@ -18,6 +22,7 @@ class TaskController extends Controller
 {
     public function __construct(
         private readonly TaskWorkflowService $workflow,
+        private readonly TaskService $tasks,
     ) {}
 
     public function index(Request $request)
@@ -36,6 +41,8 @@ class TaskController extends Controller
         $query = Task::query()
             ->with(['assignedTo:id,full_name', 'assignedBy:id,full_name', 'bill']);
 
+        $workspace = $request->query('workspace');
+
         // ---- View selector (personal inbox). Every view is bounded by RBAC. ----
         $isAdmin = $user->isSystemAdministrator();
         $allowedViews = ['mine'];
@@ -43,6 +50,13 @@ class TaskController extends Controller
             array_push($allowedViews, 'unassigned', 'team');
         }
         if ($user->canPermission('tasks.view_division')) {
+            $allowedViews[] = 'all';
+        }
+        // enforcement.view_assignments is the read-level enforcement register
+        // right: holders (M&E, Enforcement supervisors/managers, the Account
+        // Manager) may browse the whole enforcement workspace — including
+        // unassigned cases — but remain non-operators that can never assign.
+        if ($workspace === 'enforcement' && $user->canPermission('enforcement.view_assignments')) {
             $allowedViews[] = 'all';
         }
 
@@ -65,6 +79,14 @@ class TaskController extends Controller
                     break;
                 case 'unassigned':
                     $query->whereNull('assigned_to');
+                    if ($workspace === 'enforcement') {
+                        $query->where('task_type', Task::TYPE_BILL_DELIVERY)
+                            ->where('reference_type', 'property_bill')
+                            ->where('status', 'Awaiting Assignment')
+                            ->whereHas('bill', fn ($bill) => $bill
+                                ->where('case_status', 'Awaiting Assignment')
+                                ->whereNull('assigned_enforcement_officer_id'));
+                    }
                     break;
                 case 'all':
                     break;
@@ -89,13 +111,34 @@ class TaskController extends Controller
             $query->where('tasks.task_type', $request->query('task_type'));
         }
 
+        // Multiple task types (account "My Tasks" surface reuses the engine list).
+        if ($types = $request->input('task_types')) {
+            $types = array_values(array_filter(array_map('trim', (array) $types), fn ($t) => in_array($t, Task::TYPES, true)));
+            if ($types) {
+                $query->whereIn('tasks.task_type', $types);
+            }
+        }
+
+        // Section workspace isolation (§24): a caller asking for a workspace is
+        // scoped server-side to that workspace's task types — the frontend never
+        // decides which types it may see. Unauthorised workspace requests 403.
+        if ($workspace !== null) {
+            abort_unless(in_array($workspace, SectionWorkspaceService::all(), true), 422, 'Unknown workspace.');
+            abort_unless(
+                SectionWorkspaceService::canViewWorkspace($user, $workspace),
+                403,
+                SectionWorkspaceService::label($workspace).' workspace is outside your scope.'
+            );
+            $query->whereIn('tasks.task_type', SectionWorkspaceService::types($workspace));
+        }
+
         if ($request->boolean('active')) {
             $query->whereNotIn('tasks.status', ['Resolved', 'Closed', 'Paid', 'Logged']);
         }
 
         if ($request->boolean('overdue')) {
-            $query->whereNotIn('tasks.status', ['Resolved', 'Closed', 'Paid'])
-                ->whereDate('tasks.due_date', '<', now()->toDateString());
+            // Centralized overdue predicate (§21) — identical to the dashboard KPI.
+            $query->overdue();
         }
 
         if ($request->query('status_group')) {
@@ -107,11 +150,13 @@ class TaskController extends Controller
                     $query->whereIn('tasks.status', Task::COMPLETED_STATUSES);
                     break;
                 case 'pending':
-                    $query->whereIn('tasks.status', ['Awaiting Assignment', 'Assigned', 'Out for Delivery', 'Delivered', 'Payment Follow-up']);
+                    $query->whereNotIn('tasks.status', [...Task::COMPLETED_STATUSES, 'Escalated']);
                     break;
                 case 'overdue':
-                    $query->whereNotIn('tasks.status', Task::COMPLETED_STATUSES)
-                        ->whereDate('tasks.due_date', '<', now()->toDateString());
+                    $query->overdue();
+                    break;
+                case 'due_today':
+                    $query->dueToday();
                     break;
                 case 'escalated':
                     $query->where('tasks.status', 'Escalated');
@@ -121,17 +166,17 @@ class TaskController extends Controller
 
         if ($stage = $request->query('stage')) {
             $stages = [
-                'awaiting'    => ['Awaiting Assignment'],
-                'delivery'    => ['Assigned', 'Out for Delivery', 'Delivered'],
-                'followup'    => ['Payment Follow-up'],
-                'verification'=> ['Payment Claimed', 'Verification Pending', 'Payment Verification'],
-                'reminder30'  => ['30-Day Warning'],
-                'demand72'    => ['72-Hour Warning'],
-                'final'       => ['Escalated'],
-                'closure'     => ['Closed'],
-                'paid'        => ['Paid'],
-                'resolved'    => ['Resolved'],
-                'rejected'    => ['Payment Rejected'],
+                'awaiting' => ['Awaiting Assignment'],
+                'delivery' => ['Assigned', 'Out for Delivery', 'Delivered'],
+                'followup' => ['Payment Follow-up'],
+                'verification' => ['Payment Claimed', 'Verification Pending', 'Payment Verification'],
+                'reminder30' => ['30-Day Warning'],
+                'demand72' => ['72-Hour Warning'],
+                'final' => ['Escalated'],
+                'closure' => ['Closed'],
+                'paid' => ['Paid'],
+                'resolved' => ['Resolved'],
+                'rejected' => ['Payment Rejected'],
                 'outstanding' => ['Partially Paid', 'Outstanding'],
             ];
             if (isset($stages[$stage])) {
@@ -181,7 +226,7 @@ class TaskController extends Controller
 
         // A staff member may only ever list tasks of a type they are eligible
         // to see (RBAC task-type gate). Division/system scopes are unrestricted.
-        $viewableTypes = \App\Services\AssignmentEligibilityService::viewableTypes($user);
+        $viewableTypes = AssignmentEligibilityService::viewableTypes($user);
         if ($viewableTypes !== null) {
             $query->whereIn('tasks.task_type', $viewableTypes);
         }
@@ -199,20 +244,20 @@ class TaskController extends Controller
         return response()->json(['data' => $rows]);
     }
 
-/** Personal task list for the logged-in user (enforcement officer dashboard). */
-public function my(Request $request)
-{
-    $user = $request->user();
-    abort_unless($user->hasAnyPermission([
-        'tasks.complete', 'tasks.assign', 'tasks.escalate', 'enforcement.record_visit',
-        'me.view', 'payments.verify', 'payments.claim',
-    ]), 403, 'Missing permission to view your tasks.');
+    /** Personal task list for the logged-in user (enforcement officer dashboard). */
+    public function my(Request $request)
+    {
+        $user = $request->user();
+        abort_unless($user->hasAnyPermission([
+            'tasks.complete', 'tasks.assign', 'tasks.escalate', 'enforcement.record_visit',
+            'me.view', 'payments.verify', 'payments.claim',
+        ]), 403, 'Missing permission to view your tasks.');
 
-    $query = Task::where('assigned_to', $request->user()->id)
-        ->with(['assignedTo:id,full_name', 'engagements.officer:id,full_name']);
+        $query = Task::where('assigned_to', $request->user()->id)
+            ->with(['assignedTo:id,full_name', 'engagements.officer:id,full_name']);
 
         if ($request->query('active')) {
-            $query->whereNotIn('status', ['Resolved', 'Closed', 'Paid']);
+            $query->whereNotIn('status', Task::COMPLETED_STATUSES);
         }
 
         $rows = $query->orderByDesc('priority')->orderByDesc('id')->paginate($request->query('per_page', 20));
@@ -251,7 +296,7 @@ public function my(Request $request)
             ]);
         }
 
-        $task->setRelation('billEvidence', \App\Models\EvidencePhoto::query()
+        $task->setRelation('billEvidence', EvidencePhoto::query()
             ->where('task_id', $task->id)
             ->when($task->reference_type === 'property_bill', fn ($q) => $q->orWhere('bill_id', $task->reference_id))
             ->orderByDesc('captured_at')->orderByDesc('id')
@@ -318,8 +363,17 @@ public function my(Request $request)
     {
         $user = $request->user();
 
+        if ($task->task_type === Task::TYPE_BILL_DELIVERY) {
+            abort_unless(
+                $user->is_active && in_array($user->role?->name, ['Enforcement Supervisor', 'System Administrator'], true),
+                403,
+                'Only an Enforcement Supervisor may assign unassigned bill-delivery work.'
+            );
+        }
         abort_unless($user->canPermission('tasks.assign'), 403, 'Missing permission: tasks.assign');
+        abort_unless(SectionWorkspaceService::mayAssignTask($user, $task->task_type), 403, 'Assignment outside your workspace authority.');
         abort_unless($this->canSee($task), 403, 'Task outside your data scope.');
+        abort_if(in_array($task->status, Task::COMPLETED_STATUSES, true), 422, 'Task is settled and cannot be reassigned.');
 
         $data = $request->validate([
             'assigned_to' => ['required', 'integer', Rule::exists('users', 'id')],
@@ -329,29 +383,55 @@ public function my(Request $request)
         $assignee = User::find($data['assigned_to']);
 
         abort_if(
-            ! $assignee || ! \App\Services\AssignmentEligibilityService::canExecuteTaskType($assignee, $task->task_type),
+            ! $assignee || ! AssignmentEligibilityService::canExecuteTaskType($assignee, $task->task_type),
             422,
             'Assignment rejected. '.($assignee?->full_name ?? 'User')." does not have permission to perform {$task->task_type}."
         );
 
         $from = $task->assigned_to;
+        $fromStatus = $task->status;
+        $toStatus = in_array($fromStatus, ['Logged', 'Awaiting Assignment'], true) ? 'Assigned' : $fromStatus;
+        $billDistrict = null;
+        if ($task->task_type === Task::TYPE_BILL_DELIVERY) {
+            $membership = app(\App\Services\EnforcementOrganizationService::class)->authorizeBillAssignment($user, $assignee, $task);
+            if ($task->reference_type === 'property_bill') {
+                $billDistrict = $membership->primary_district_id;
+            }
+        }
 
         $task->update([
             'assigned_to' => $assignee->id,
             'assigned_by' => $user->id,
-            'status' => in_array($task->status, ['Logged', 'Awaiting Assignment'], true) ? 'Assigned' : $task->status,
+            'status' => $toStatus,
             'due_date' => $task->due_date ?? now()->addDays(14)->toDateString(),
         ]);
 
         $task->history()->create([
-            'from_status' => $task->status,
-            'to_status' => $task->status,
+            'from_status' => $fromStatus,
+            'to_status' => $toStatus,
             'action' => 'assign',
             'performed_by' => $user->id,
             'remarks' => ($from ? "Reassigned from #{$from} " : 'Assigned ')."to {$assignee->full_name}. ".($data['remarks'] ?? ''),
         ]);
 
-        (new TaskService)->notify($assignee, 'Task assigned', "Task {$task->task_reference} assigned to you.", 'tasks');
+        if ($billDistrict !== null) {
+            PropertyBill::whereKey($task->reference_id)->update([
+                'assigned_enforcement_officer_id' => $assignee->id,
+                'primary_tax_district_id' => $billDistrict,
+            ]);
+        }
+
+        $this->tasks->notify($assignee, 'Task assigned', "Task {$task->task_reference} assigned to you.", 'tasks');
+
+        if (in_array($task->task_type, AccountTaskController::ACCOUNT_TASK_TYPES, true)) {
+            $this->tasks->notify(
+                $assignee,
+                'New task assigned',
+                "Task {$task->task_reference} ({$task->task_type}) assigned to you.",
+                Notification::TYPE_ACCOUNT_TASKS,
+                '/account/my-tasks',
+            );
+        }
 
         return response()->json([
             'data' => $this->present($task->fresh(['assignedTo:id,full_name', 'history'])),
@@ -445,12 +525,12 @@ public function my(Request $request)
 
         $now = now();
         $range = match ($date) {
-            'today'   => [$now->copy()->startOfDay(), $now->copy()->endOfDay()],
-            'week'    => [$now->copy()->startOfWeek(), $now->copy()->endOfWeek()],
-            'month'   => [$now->copy()->startOfMonth(), $now->copy()->endOfMonth()],
+            'today' => [$now->copy()->startOfDay(), $now->copy()->endOfDay()],
+            'week' => [$now->copy()->startOfWeek(), $now->copy()->endOfWeek()],
+            'month' => [$now->copy()->startOfMonth(), $now->copy()->endOfMonth()],
             'quarter' => [$now->copy()->startOfQuarter(), $now->copy()->endOfQuarter()],
-            'year'    => [$now->copy()->startOfYear(), $now->copy()->endOfYear()],
-            default   => null,
+            'year' => [$now->copy()->startOfYear(), $now->copy()->endOfYear()],
+            default => null,
         };
 
         return $range ? [$range[0]->toDateString(), $range[1]->toDateString()] : null;
@@ -464,24 +544,34 @@ public function my(Request $request)
             return true;
         }
 
+        if ($user->role?->name === 'Enforcement Supervisor'
+            && $task->task_type === Task::TYPE_BILL_DELIVERY
+            && $task->reference_type === 'property_bill'
+            && $task->assigned_to === null
+            && $task->status === 'Awaiting Assignment'
+            && $task->bill?->case_status === 'Awaiting Assignment'
+            && $task->bill?->assigned_enforcement_officer_id === null) {
+            return true;
+        }
+
         $scope = $user->scopeLevel();
 
         if ($scope === 'division' || $scope === 'system') {
             return true;
         }
 
-        if (! \App\Services\AssignmentEligibilityService::canViewTaskType($user, $task->task_type)) {
+        if (! AssignmentEligibilityService::canViewTaskType($user, $task->task_type)) {
             return false;
         }
 
         if ($scope === 'section') {
             return $task->assigned_to
-                && in_array($task->assigned_to, User::where('section_id', $user->section_id)->pluck('id')->all());
+                && in_array($task->assigned_to, User::where('section_id', $user->section_id)->where('is_active', true)->pluck('id')->all());
         }
 
         if ($scope === 'team') {
             return $task->assigned_to === $user->id
-                || in_array($task->assigned_to, User::where('supervisor_id', $user->id)->pluck('id')->all());
+                || in_array($task->assigned_to, User::where('supervisor_id', $user->id)->where('is_active', true)->pluck('id')->all());
         }
 
         // own
@@ -561,15 +651,37 @@ public function my(Request $request)
 
     private function transitionPermission(Task $task): string
     {
-        $actionMap = [
-            'escalate' => 'tasks.escalate',
-            'complete' => 'tasks.complete',
-            'reopen' => 'tasks.reopen',
+        $action = request()->input('action');
+        $toStatus = request()->input('to_status');
+
+        // Reopening a settled case is its own permission; never derivable from
+        // the generic completion checklist.
+        if ($action === 'reopen') {
+            return 'tasks.reopen';
+        }
+
+        // Financial settlement statuses are owned by the payment verification
+        // pipeline: a task may only be driven into them by an actor who can
+        // actually verify payments — never by a bare `tasks.complete` holder.
+        $financial = [
+            'Paid',
+            'Partially Paid',
+            'Outstanding',
+            'Verification Pending',
+            'Payment Verification',
+            'Payment Rejected',
         ];
 
-        $action = request()->input('action');
+        if (in_array($toStatus, $financial, true)) {
+            return 'payments.verify';
+        }
 
-        return $actionMap[$action] ?? 'tasks.complete';
+        // Escalation ladder entries are gated by the escalation permission set.
+        if ($action === 'escalate' || in_array($toStatus, ['Escalated', '30-Day Warning', '72-Hour Warning'], true)) {
+            return 'tasks.escalate';
+        }
+
+        return 'tasks.complete';
     }
 
     private function present(Task $task): array
@@ -628,7 +740,7 @@ public function my(Request $request)
                     'amount' => $p->amount,
                     'payment_period' => $p->payment_period,
                     'receipt_number' => $p->receipt_number,
-                    'litas_reference' => $p->litas_reference,
+                    'source_reference' => $p->source_reference,
                     'verified_by' => $p->verifier?->full_name,
                     'verified_at' => $p->verified_at?->toISOString(),
                 ])->values()
@@ -671,6 +783,7 @@ public function my(Request $request)
             'sync_attempts' => $task->sync_attempts,
             'last_sync_at' => $task->last_sync_at?->toISOString(),
             'due_date' => $task->due_date?->toDateString(),
+            'deadline_status' => $task->presentDeadline(),
             'started_at' => $task->started_at?->toISOString(),
             'completed_at' => $task->completed_at?->toISOString(),
             'completed_by' => $task->completed_by,

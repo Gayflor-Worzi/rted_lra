@@ -3,23 +3,43 @@ import { View, Text, TouchableOpacity, StyleSheet } from 'react-native'
 import { useFocusEffect } from '@react-navigation/native'
 import api from '../api'
 import { useAuth } from '../auth'
+import { fetchOfflineRead } from '../offline'
 import { can } from '../rbac'
 import { theme } from '../theme'
-import { Screen, BrandHeader, Card, Empty, Badge } from '../components'
+import { Screen, BrandHeader, Card, Empty, Badge, OfflineReadStatus } from '../components'
 
 export default function DiscoverScreen({ navigation }) {
-  const { user } = useAuth()
+  const { user, canUseOfflineCache } = useAuth()
   const canCreate = can(user, 'discovery.create')
-  const canView = can(user, 'discovery.review') || can(user, 'discovery.view_history') || canCreate
+  const canView = can(user, 'discovery.view') || can(user, 'discovery.review') || canCreate
   const [recent, setRecent] = useState(null)
+  const [readStatus, setReadStatus] = useState(null)
+  const [syncedAt, setSyncedAt] = useState(null)
+  const [loadError, setLoadError] = useState('')
 
   const loadRecent = useCallback(async () => {
     try {
-      const params = { per_page: 10, officer_id: user?.id }
-      const r = await api.get('/discoveries', { params })
-      setRecent(r.data?.data?.data || r.data?.data || [])
-    } catch { setRecent([]) }
-  }, [user])
+      const result = await fetchOfflineRead({
+        module: 'discoveries',
+        cacheKey: `${user?.role}:recent`,
+        user,
+        allowCache: canUseOfflineCache,
+        request: () => api.get('/discoveries', { params: { per_page: 10, officer_id: user?.id } }),
+        select: (response) => response.data?.data?.data || response.data?.data || [],
+        cacheSelect: (records) => Array.isArray(records)
+          ? records.filter((record) => String(record?.discovered_by) === String(user.id))
+          : [],
+      })
+      setRecent(result.status === 'expired' ? [] : result.data)
+      setReadStatus(result.status)
+      setSyncedAt(result.syncedAt)
+      setLoadError(result.status === 'expired' ? 'Offline discovery data has expired. Connect to refresh.' : '')
+    } catch {
+      setRecent([])
+      setReadStatus(null)
+      setLoadError('Could not load discoveries. Connect to the network and retry.')
+    }
+  }, [user, canUseOfflineCache])
 
   useFocusEffect(useCallback(() => { loadRecent() }, [loadRecent]))
 
@@ -35,7 +55,10 @@ export default function DiscoverScreen({ navigation }) {
         ) : null}
       />
 
-      {canView && recent !== null && recent.length > 0 ? (
+      <OfflineReadStatus status={readStatus} syncedAt={syncedAt} />
+      {loadError ? <Card style={{ marginTop: 12 }}><Text style={{ color: theme.colors.danger }}>{loadError}</Text></Card> : null}
+
+      {loadError ? null : canView && recent !== null && recent.length > 0 ? (
         <Card style={{ marginTop: 14 }}>
           <Text style={s.cardHeading}>Recent Discoveries</Text>
           {recent.map((d) => (

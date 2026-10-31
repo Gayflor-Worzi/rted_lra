@@ -3,11 +3,13 @@ import { View, Text, Modal, TouchableOpacity, StyleSheet } from 'react-native'
 import { useAuth } from '../auth'
 import { theme } from '../theme'
 
-const IDLE_MS = (Number(process.env.EXPO_PUBLIC_IDLE_MINUTES || 8) * 60) * 1000
+const IDLE_MIN = Number(process.env.EXPO_PUBLIC_IDLE_MINUTES || 5)
+const IDLE_MS = (IDLE_MIN * 60) * 1000
 const COUNTDOWN_MS = 10 * 1000
 
 /**
- * Automatically signs the user out after 8 minutes of inactivity.
+ * Automatically signs the user out after the configured idle window of
+ * inactivity (default 5 minutes, overridable with EXPO_PUBLIC_IDLE_MINUTES).
  * Once the idle threshold is reached a 10-second countdown overlay appears;
  * any touch (or the "Stay signed in" button) resets the timer.
  */
@@ -40,6 +42,7 @@ export default function IdleGate({ children }) {
   }
 
   const secs = left === null ? 0 : Math.ceil(left / 1000)
+  const idleLabel = `${IDLE_MIN} minute${IDLE_MIN === 1 ? '' : 's'}`
 
   return (
     <View style={s.root} onTouchStart={reset}>
@@ -50,7 +53,7 @@ export default function IdleGate({ children }) {
             <Text style={s.icon}>⏳</Text>
             <Text style={s.title}>Session timeout</Text>
             <Text style={s.body}>
-              You have been inactive for 8 minutes. Logging out in {secs} {secs === 1 ? 'second' : 'seconds'}.
+              You have been inactive for {idleLabel}. Logging out in {secs} {secs === 1 ? 'second' : 'seconds'}.
             </Text>
             <TouchableOpacity style={s.btn} onPress={reset}>
               <Text style={s.btnText}>Stay signed in</Text>

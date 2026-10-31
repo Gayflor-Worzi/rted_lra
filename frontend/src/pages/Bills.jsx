@@ -6,6 +6,7 @@ import { useAuth } from '../auth'
 import { CASE_STATUSES, PAYMENT_STATUSES } from '../lib/constants'
 import BillCreate from './BillCreate'
 import BillDrawer from '../components/BillDrawer'
+import BillAmendModal from '../components/BillAmendModal'
 
 function useDebounced(value, ms = 400) {
   const [v, setV] = useState(value)
@@ -18,6 +19,7 @@ function useDebounced(value, ms = 400) {
 
 export default function Bills() {
   const { can } = useAuth()
+  const canAmend = can('bills.amend_document') || can('bills.amend_penalty_interest')
   const [rows, setRows] = useState(null)
   const [err, setErr] = useState(null)
   const [q, setQ] = useState('')
@@ -29,6 +31,8 @@ export default function Bills() {
   const [users, setUsers] = useState([])
   const [page, setPage] = useState(1)
   const [showCreate, setShowCreate] = useState(false)
+  const [showAmend, setShowAmend] = useState(false)
+  const [amendBillId, setAmendBillId] = useState(null)
   const [drawerId, setDrawerId] = useState(null)
 
   useEffect(() => {
@@ -57,7 +61,12 @@ export default function Bills() {
     <div className="space-y-4">
       <PageTitle
         sub="Bills logged and tracked by the RETD task engine."
-        right={can('bills.create') && <Btn onClick={() => setShowCreate(true)}>+ Log a bill</Btn>}>
+        right={
+          <div className="flex items-center gap-2">
+            {canAmend && <Btn tone="white" onClick={() => { setShowAmend(true); setAmendBillId(null) }}>Amend a bill</Btn>}
+            {can('bills.create') && <Btn onClick={() => setShowCreate(true)}>+ Log a bill</Btn>}
+          </div>
+        }>
         Bill Register
       </PageTitle>
 
@@ -65,6 +74,14 @@ export default function Bills() {
         <BillCreate
           onClose={() => setShowCreate(false)}
           onCreated={() => { setShowCreate(false); setPage(1); load() }}
+        />
+      )}
+
+      {showAmend && (
+        <BillAmendModal
+          initialBillId={amendBillId}
+          onClose={() => { setShowAmend(false); setAmendBillId(null) }}
+          onChanged={() => load()}
         />
       )}
 
@@ -135,6 +152,7 @@ export default function Bills() {
                     <span className="inline-flex items-center gap-1.5">
                       <Link to={`/bills/${b.id}`} className="font-medium text-brand-500 hover:underline">{b.document_number}</Link>
                       <button onClick={() => setDrawerId(b.id)} title="Open bill drawer" className="text-slate-300 hover:text-navy-700 transition">⤢</button>
+                      {canAmend && <button onClick={() => { setShowAmend(true); setAmendBillId(b.id) }} className="text-[11px] text-brand-500 font-semibold hover:underline">Amend</button>}
                     </span>
                   </td>
                   <td className="py-2.5 pr-3">{b.taxpayer_name}</td>
@@ -171,6 +189,7 @@ export default function Bills() {
                   <div className="flex items-center gap-1.5">
                     <Link to={`/bills/${b.id}`} className="font-semibold text-brand-500 break-all">{b.document_number}</Link>
                     <button onClick={() => setDrawerId(b.id)} title="Open bill drawer" className="text-slate-300 hover:text-navy-700 transition">⤢</button>
+                    {canAmend && <button onClick={() => { setShowAmend(true); setAmendBillId(b.id) }} className="text-[11px] text-brand-500 font-semibold hover:underline">Amend</button>}
                   </div>
                   <div className="text-xs text-slate-500 font-mono mt-0.5">TIN {b.tin || '—'} · {b.property_id}</div>
                 </div>

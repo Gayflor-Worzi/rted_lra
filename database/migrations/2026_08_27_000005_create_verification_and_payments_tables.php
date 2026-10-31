@@ -8,7 +8,7 @@ return new class extends Migration
 {
     /**
      * Payment Verification — distinct from verified payments.
-     * Officers submit CLAIMS; Account & Records VERIFY against LITAS info.
+     * Officers submit CLAIMS; Account & Records VERIFY against source-system info.
      */
     public function up(): void
     {
@@ -25,7 +25,7 @@ return new class extends Migration
             $table->date('receipt_date')->nullable();
             $table->string('receipt_attachment')->nullable();
             $table->string('match_status')->default('Pending'); // Pending | Match | Mismatch
-            $table->string('litas_verification_status')->nullable(); // litas_reference | verified_amount | verified_date | verified_period
+            $table->string('litas_verification_status')->nullable(); // source_reference | verified_amount | verified_date | verified_period
             $table->decimal('verified_amount', 14, 2)->nullable();
             $table->string('litas_reference')->nullable();
             $table->unsignedBigInteger('verified_by')->nullable();

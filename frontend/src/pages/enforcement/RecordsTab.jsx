@@ -19,7 +19,7 @@ export default function RecordsTab() {
   const [drawerId, setDrawerId] = useState(null)
 
   const load = (extra = {}) => {
-    const params = { per_page: 25, page: extra.page ?? page, ...(group ? { status_group: group } : {}), ...(payment ? { payment } : {}), ...(q ? { q } : {}), ...(from ? { date_from: from } : {}), ...(to ? { date_to: to } : {}) }
+    const params = { workspace: 'enforcement', per_page: 25, page: extra.page ?? page, ...(group ? { status_group: group } : {}), ...(payment ? { payment } : {}), ...(q ? { q } : {}), ...(from ? { date_from: from } : {}), ...(to ? { date_to: to } : {}) }
     api.get('/tasks', { params })
       .then((r) => setRows(unwrap(r).data))
       .catch((ex) => setErr(errMsg(ex)))

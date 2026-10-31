@@ -12,8 +12,11 @@ use App\Models\StaffTarget;
 use App\Models\Task;
 use App\Models\User;
 use App\Models\Valuation;
+use App\Traits\SafeCsv;
+use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -29,6 +32,8 @@ use Illuminate\Support\Facades\DB;
  */
 class AnalyticsController extends Controller
 {
+    use SafeCsv;
+
     private const TABLE = [
         'tasks' => 'tasks',
         'bills' => 'property_bills',
@@ -42,7 +47,7 @@ class AnalyticsController extends Controller
 
     private const METRICS = [
         'tasks' => ['label' => 'Tasks', 'perms' => ['tasks.view_division', 'tasks.view_section', 'tasks.view_own'], 'scope' => 'assigned_to', 'date' => 'created_at'],
-        'bills' => ['label' => 'Bills', 'perms' => ['bills.view'], 'scope' => 'account_staff_id', 'date' => 'date_logged'],
+        'bills' => ['label' => 'Bills', 'perms' => ['bills.view', 'enforcement.bill_delivery'], 'scope' => 'account_staff_id', 'date' => 'date_logged'],
         'collections' => ['label' => 'Collections', 'perms' => ['reports.view', 'bills.view'], 'scope' => 'verified_by', 'date' => 'verified_at', 'sum' => 'amount'],
         'payments' => ['label' => 'Payment Verification', 'perms' => ['payments.view_queue', 'payments.view_history'], 'scope' => 'verified_by', 'date' => 'created_at'],
         'discoveries' => ['label' => 'Discoveries', 'perms' => ['discovery.view', 'discovery.create'], 'scope' => 'discovered_by', 'date' => 'discovery_date'],
@@ -52,25 +57,25 @@ class AnalyticsController extends Controller
     ];
 
     private const GROUP_OPTIONS = [
-        'tasks' => ['staff'=>'Staff', 'section'=>'Section', 'month'=>'Month', 'quarter'=>'Quarter', 'year'=>'Year', 'task_type'=>'Task type', 'task_status'=>'Status', 'enforcement_stage'=>'Enforcement stage', 'completion_status'=>'Completion', 'payment_status'=>'Bill payment status', 'property_classification'=>'Property classification'],
-        'bills' => ['staff'=>'Staff', 'section'=>'Section', 'month'=>'Month', 'quarter'=>'Quarter', 'year'=>'Year', 'property_classification'=>'Property classification', 'property_type'=>'Property type', 'payment_status'=>'Payment status', 'bill_status'=>'Case status', 'completion_status'=>'Completion'],
-        'collections' => ['staff'=>'Staff', 'section'=>'Section', 'month'=>'Month', 'quarter'=>'Quarter', 'year'=>'Year', 'property_classification'=>'Property classification', 'property_type'=>'Property type'],
-        'payments' => ['staff'=>'Staff', 'month'=>'Month', 'quarter'=>'Quarter', 'year'=>'Year', 'payment_status'=>'Verification status', 'match_status'=>'Match status'],
-        'discoveries' => ['staff'=>'Staff', 'section'=>'Section', 'month'=>'Month', 'quarter'=>'Quarter', 'year'=>'Year', 'property_classification'=>'Property classification', 'property_type'=>'Property type', 'discovery_status'=>'Discovery status', 'decision_path'=>'Decision path'],
-        'valuations' => ['staff'=>'Staff', 'section'=>'Section', 'month'=>'Month', 'quarter'=>'Quarter', 'year'=>'Year', 'property_classification'=>'Property classification', 'property_type'=>'Type', 'valuation_status'=>'Valuation status', 'completion_status'=>'Completion'],
-        'visits' => ['staff'=>'Staff', 'section'=>'Section', 'month'=>'Month', 'quarter'=>'Quarter', 'year'=>'Year', 'visit_status'=>'Visit status', 'delivery_status'=>'Delivery status'],
-        'targets' => ['staff'=>'Staff', 'section'=>'Section', 'month'=>'Month', 'quarter'=>'Quarter', 'year'=>'Year', 'metric'=>'Target metric', 'completion_status'=>'Target health'],
+        'tasks' => ['staff' => 'Staff', 'section' => 'Section', 'month' => 'Month', 'quarter' => 'Quarter', 'year' => 'Year', 'task_type' => 'Task type', 'task_status' => 'Status', 'enforcement_stage' => 'Enforcement stage', 'completion_status' => 'Completion', 'payment_status' => 'Bill payment status', 'property_classification' => 'Property classification'],
+        'bills' => ['staff' => 'Staff', 'section' => 'Section', 'month' => 'Month', 'quarter' => 'Quarter', 'year' => 'Year', 'property_classification' => 'Property classification', 'property_type' => 'Property type', 'payment_status' => 'Payment status', 'bill_status' => 'Case status', 'completion_status' => 'Completion'],
+        'collections' => ['staff' => 'Staff', 'section' => 'Section', 'month' => 'Month', 'quarter' => 'Quarter', 'year' => 'Year', 'property_classification' => 'Property classification', 'property_type' => 'Property type'],
+        'payments' => ['staff' => 'Staff', 'month' => 'Month', 'quarter' => 'Quarter', 'year' => 'Year', 'payment_status' => 'Verification status', 'match_status' => 'Match status'],
+        'discoveries' => ['staff' => 'Staff', 'section' => 'Section', 'month' => 'Month', 'quarter' => 'Quarter', 'year' => 'Year', 'property_classification' => 'Property classification', 'property_type' => 'Property type', 'discovery_status' => 'Discovery status', 'decision_path' => 'Decision path', 'value_declaration_type' => 'Value declaration'],
+        'valuations' => ['staff' => 'Staff', 'section' => 'Section', 'month' => 'Month', 'quarter' => 'Quarter', 'year' => 'Year', 'property_classification' => 'Property classification', 'property_type' => 'Type', 'valuation_status' => 'Valuation status', 'completion_status' => 'Completion'],
+        'visits' => ['staff' => 'Staff', 'section' => 'Section', 'month' => 'Month', 'quarter' => 'Quarter', 'year' => 'Year', 'visit_status' => 'Visit status', 'delivery_status' => 'Delivery status'],
+        'targets' => ['staff' => 'Staff', 'section' => 'Section', 'month' => 'Month', 'quarter' => 'Quarter', 'year' => 'Year', 'metric' => 'Target metric', 'completion_status' => 'Target health'],
     ];
 
     private const PIE_OPTIONS = [
-        'tasks' => ['task_status'=>'Task status', 'enforcement_stage'=>'Enforcement stage', 'completion_status'=>'Completion', 'staff'=>'Staff', 'section'=>'Section', 'payment_status'=>'Bill payment status'],
-        'bills' => ['payment_status'=>'Payment status', 'bill_status'=>'Case status', 'property_classification'=>'Property classification', 'property_type'=>'Property type'],
-        'collections' => ['property_classification'=>'Property classification', 'property_type'=>'Property type'],
-        'payments' => ['payment_status'=>'Verification status', 'match_status'=>'Match status'],
-        'discoveries' => ['discovery_status'=>'Discovery status', 'decision_path'=>'Decision path', 'property_classification'=>'Property classification', 'property_type'=>'Property type'],
-        'valuations' => ['valuation_status'=>'Valuation status', 'completion_status'=>'Completion', 'property_classification'=>'Property classification'],
-        'visits' => ['visit_status'=>'Visit status', 'delivery_status'=>'Delivery status', 'staff'=>'Staff', 'section'=>'Section'],
-        'targets' => ['metric'=>'Target metric', 'completion_status'=>'Target health'],
+        'tasks' => ['task_status' => 'Task status', 'enforcement_stage' => 'Enforcement stage', 'completion_status' => 'Completion', 'staff' => 'Staff', 'section' => 'Section', 'payment_status' => 'Bill payment status'],
+        'bills' => ['payment_status' => 'Payment status', 'bill_status' => 'Case status', 'property_classification' => 'Property classification', 'property_type' => 'Property type'],
+        'collections' => ['property_classification' => 'Property classification', 'property_type' => 'Property type'],
+        'payments' => ['payment_status' => 'Verification status', 'match_status' => 'Match status'],
+        'discoveries' => ['discovery_status' => 'Discovery status', 'decision_path' => 'Decision path', 'property_classification' => 'Property classification', 'property_type' => 'Property type', 'value_declaration_type' => 'Value declaration'],
+        'valuations' => ['valuation_status' => 'Valuation status', 'completion_status' => 'Completion', 'property_classification' => 'Property classification'],
+        'visits' => ['visit_status' => 'Visit status', 'delivery_status' => 'Delivery status', 'staff' => 'Staff', 'section' => 'Section'],
+        'targets' => ['metric' => 'Target metric', 'completion_status' => 'Target health'],
     ];
 
     private const PIE_DEFAULT = [
@@ -103,6 +108,7 @@ class AnalyticsController extends Controller
         $meta = self::METRICS[$metric] ?? null;
         abort_unless($meta, 422, 'Unknown analytics metric.');
         abort_unless($user->hasAnyPermission($meta['perms']), 403, 'Missing permission to view this metric.');
+        $this->authorizeMetricView($user, $metric);
 
         return response()->json(['data' => $this->buildSummary($request, $metric, $user)]);
     }
@@ -121,6 +127,7 @@ class AnalyticsController extends Controller
         $meta = self::METRICS[$metric] ?? null;
         abort_unless($meta, 422, 'Unknown analytics metric.');
         abort_unless($user->hasAnyPermission($meta['perms']), 403, 'Missing permission to view this metric.');
+        $this->authorizeMetricView($user, $metric);
 
         $format = $request->query('format', 'csv');
         abort_unless(in_array($format, ['csv', 'pdf'], true), 422, 'format must be csv or pdf.');
@@ -142,7 +149,7 @@ class AnalyticsController extends Controller
 
         $html = $this->toExportPdfHtml($label, $summary, $user, $filterContext, $request);
 
-        return \Barryvdh\DomPDF\Facade\Pdf::setOption('isPhpEnabled', true)
+        return Pdf::setOption('isPhpEnabled', true)
             ->loadHTML($html)
             ->setPaper('a4', 'landscape')
             ->download($filename);
@@ -200,7 +207,7 @@ class AnalyticsController extends Controller
     }
 
     /* ------------------------------------------------------------------ */
-    /*  Base scoped queries                                                */
+    /*  Base scoped queries */
     /* ------------------------------------------------------------------ */
 
     private function baseQuery(string $metric, User $user): Builder
@@ -319,7 +326,7 @@ class AnalyticsController extends Controller
                 $tbl = $t;
                 $query->whereExists(function ($q) use ($param, $value, $tbl) {
                     $q->selectRaw('1')->from('property_bills as AFB5')
-                        ->whereColumn("AFB5.id", '=', "{$tbl}.bill_id")
+                        ->whereColumn('AFB5.id', '=', "{$tbl}.bill_id")
                         ->where("AFB5.{$param}", $value);
                 });
 
@@ -361,7 +368,7 @@ class AnalyticsController extends Controller
     }
 
     /* ------------------------------------------------------------------ */
-    /*  Bar chart                                                          */
+    /*  Bar chart */
     /* ------------------------------------------------------------------ */
 
     /** Human label for a target's live health band. */
@@ -381,7 +388,7 @@ class AnalyticsController extends Controller
      * the analytics engine reports the same single source of truth as the
      * target records themselves, never the last-refreshed stored snapshot.
      */
-    private function targetRows(Builder $query): \Illuminate\Support\Collection
+    private function targetRows(Builder $query): Collection
     {
         return $query->with('user:id,full_name')->get()
             ->each(fn (StaffTarget $t) => $t->setAttribute('achieved_value', $t->computeAchievedValue()));
@@ -433,7 +440,7 @@ class AnalyticsController extends Controller
         $query->selectRaw('COALESCE('.$expr.', \'—\') as label')
             ->selectRaw($sum ? "SUM({$sum}) as value" : 'COUNT(*) as value')
             ->selectRaw($idExpr ? "{$idExpr} as owner_id" : 'null as owner_id')
-            ->groupBy(DB::raw($expr))
+            ->groupBy(DB::raw('COALESCE('.$expr.', \'—\')'))
             ->when($idExpr, fn (Builder $q) => $q->groupBy($idExpr));
 
         $rows = $query->orderByDesc('value')
@@ -478,7 +485,7 @@ class AnalyticsController extends Controller
         $query->selectRaw('COALESCE('.$expr.', \'—\') as label')
             ->selectRaw('COUNT(*) as value')
             ->selectRaw($idExpr ? "{$idExpr} as owner_id" : 'null as owner_id')
-            ->groupBy(DB::raw($expr))
+            ->groupBy(DB::raw('COALESCE('.$expr.', \'—\')'))
             ->when($idExpr, fn (Builder $q) => $q->groupBy($idExpr));
 
         $rows = $query->orderByDesc('value')->get();
@@ -494,11 +501,11 @@ class AnalyticsController extends Controller
     }
 
     /* ------------------------------------------------------------------ */
-    /*  Group specifications                                               */
+    /*  Group specifications */
     /* ------------------------------------------------------------------ */
 
     /**
-     * @return array{0: string, 1: array, 2: ?string}  [expr, joins, idExpr]
+     * @return array{0: string, 1: array, 2: ?string} [expr, joins, idExpr]
      */
     private function groupSpec(string $metric, string $dim, string $dateCol): array
     {
@@ -517,7 +524,7 @@ class AnalyticsController extends Controller
         // section
         if ($dim === 'section') {
             if ($metric === 'tasks') {
-                return ["tasks.section", [], null];
+                return ['tasks.section', [], null];
             }
 
             return ['COALESCE(s.name, \'—\')', [
@@ -571,6 +578,7 @@ class AnalyticsController extends Controller
             'payments.payment_status' => ['COALESCE(payment_verifications.verification_status, \'Pending\')', [], null],
             'discoveries.discovery_status' => ['property_discoveries.status', [], null],
             'discoveries.decision_path' => ['COALESCE(property_discoveries.decision_path, \'not set\')', [], null],
+            'discoveries.value_declaration_type' => ['COALESCE(property_discoveries.value_declaration_type, \'not declared\')', [], null],
             'valuations.valuation_status' => ['valuations.status', [], null],
             'visits.visit_status' => ['COALESCE(enforcement_visits.visit_status, \'Scheduled\')', [], null],
             'visits.delivery_status' => ['COALESCE(enforcement_visits.delivery_status, \'—\')', [], null],
@@ -590,7 +598,7 @@ class AnalyticsController extends Controller
     }
 
     /* ------------------------------------------------------------------ */
-    /*  KPIs                                                               */
+    /*  KPIs */
     /* ------------------------------------------------------------------ */
 
     private function buildKpis(string $metric, Builder $query): array
@@ -635,8 +643,8 @@ class AnalyticsController extends Controller
         if ($metric === 'discoveries') {
             return [
                 ['key' => 'total', 'label' => 'Discoveries (range)', 'value' => (clone $query)->count(), 'tone' => 'navy'],
-                ['key' => 'in_progress', 'label' => 'In progress', 'value' => (clone $query)->whereNotIn('status', ['COMPLETED', 'AC_REJECTED'])->count(), 'tone' => 'blue'],
-                ['key' => 'completed', 'label' => 'Completed', 'value' => (clone $query)->where('status', 'COMPLETED')->count(), 'tone' => 'green'],
+                ['key' => 'in_progress', 'label' => 'In progress', 'value' => (clone $query)->whereNotIn('status', [PropertyDiscovery::STATUS_COMPLETED, PropertyDiscovery::STATUS_REJECTED])->count(), 'tone' => 'blue'],
+                ['key' => 'completed', 'label' => 'Completed', 'value' => (clone $query)->where('status', PropertyDiscovery::STATUS_COMPLETED)->count(), 'tone' => 'green'],
                 ['key' => 'valuation_path', 'label' => 'Valuation path', 'value' => (clone $query)->where('decision_path', 'valuation')->count(), 'tone' => 'amber'],
             ];
         }
@@ -644,18 +652,25 @@ class AnalyticsController extends Controller
         if ($metric === 'valuations') {
             return [
                 ['key' => 'total', 'label' => 'Valuations (range)', 'value' => (clone $query)->count(), 'tone' => 'navy'],
-                ['key' => 'pending', 'label' => 'In review / pending', 'value' => (clone $query)->whereNotIn('status', ['Approved', 'Rejected'])->count(), 'tone' => 'amber'],
-                ['key' => 'approved', 'label' => 'Approved', 'value' => (clone $query)->where('status', 'Approved')->count(), 'tone' => 'green'],
+                ['key' => 'pending', 'label' => 'In review / pending', 'value' => (clone $query)->whereNotIn('status', [Valuation::STATUS_AC_APPROVED, Valuation::STATUS_AC_REJECTED, Valuation::STATUS_COMPLETED])->count(), 'tone' => 'amber'],
+                ['key' => 'approved', 'label' => 'Approved', 'value' => (clone $query)->whereIn('status', [Valuation::STATUS_AC_APPROVED, Valuation::STATUS_COMPLETED])->count(), 'tone' => 'green'],
                 ['key' => 'tax_payable', 'label' => 'Total tax payable', 'value' => round((float) (clone $query)->sum('total_tax_payable'), 2), 'tone' => 'blue', 'money' => true],
             ];
         }
 
         if ($metric === 'visits') {
+            $eligibleVisits = fn () => (clone $query)->whereIn(
+                'delivery_status',
+                [...EnforcementVisit::DELIVERY_STATUSES, 'Returned to Office']
+            );
+
             return [
-                ['key' => 'total', 'label' => 'Visits (range)', 'value' => (clone $query)->count(), 'tone' => 'navy'],
+                ['key' => 'total', 'label' => 'Visits with delivery outcomes (range)', 'value' => $eligibleVisits()->count(), 'tone' => 'navy'],
                 ['key' => 'delivered', 'label' => 'Delivered', 'value' => (clone $query)->where('delivery_status', EnforcementVisit::DELIVERY_DELIVERED)->count(), 'tone' => 'green'],
-                ['key' => 'returned', 'label' => 'Returned', 'value' => (clone $query)->where('delivery_status', 'Returned')->count(), 'tone' => 'red'],
-                ['key' => 'out_for_delivery', 'label' => 'Out for delivery', 'value' => (clone $query)->where('delivery_status', 'Out for Delivery')->count(), 'tone' => 'amber'],
+                ['key' => 'out_for_delivery', 'label' => 'Out for delivery', 'value' => (clone $query)->where('delivery_status', EnforcementVisit::DELIVERY_OUT_FOR_DELIVERY)->count(), 'tone' => 'amber'],
+                ['key' => 'returned', 'label' => 'Returned', 'value' => (clone $query)->whereIn('delivery_status', [EnforcementVisit::DELIVERY_RETURNED, 'Returned to Office'])->count(), 'tone' => 'red'],
+                ['key' => 'undelivered', 'label' => 'Undelivered', 'value' => (clone $query)->where('delivery_status', EnforcementVisit::DELIVERY_UNDELIVERED)->count(), 'tone' => 'red'],
+                ['key' => 'not_mailable', 'label' => 'Not Mailable', 'value' => (clone $query)->where('delivery_status', EnforcementVisit::DELIVERY_NOT_MAILABLE)->count(), 'tone' => 'slate'],
             ];
         }
 
@@ -671,7 +686,7 @@ class AnalyticsController extends Controller
     }
 
     /* ------------------------------------------------------------------ */
-    /*  Detailed record table                                              */
+    /*  Detailed record table */
     /* ------------------------------------------------------------------ */
 
     private function buildRecords(string $metric, Request $request, Builder $query): array
@@ -876,7 +891,7 @@ class AnalyticsController extends Controller
         }
 
         // everything else: equality against the derived expression
-        [, $joins, ] = $this->groupSpec($metric, $dim, self::METRICS[$metric]['date']);
+        [, $joins] = $this->groupSpec($metric, $dim, self::METRICS[$metric]['date']);
         $this->applyJoins($query, $joins);
         $query->whereRaw('COALESCE('.$this->dimExpr($metric, $dim).', \'—\') = ?', [(string) $value]);
     }
@@ -912,7 +927,7 @@ class AnalyticsController extends Controller
     }
 
     /* ------------------------------------------------------------------ */
-    /*  Shared helpers                                                     */
+    /*  Shared helpers */
     /* ------------------------------------------------------------------ */
 
     /** Human-readable filter context written into dashboard exports. */
@@ -944,32 +959,32 @@ class AnalyticsController extends Controller
     {
         $out = fopen('php://temp', 'r+');
         fwrite($out, "\xEF\xBB\xBF");
-        fputcsv($out, [$label]);
-        fputcsv($out, ['Generated '.now('Africa/Monrovia')->format('Y-m-d H:i').' by '.$user->full_name]);
-        fputcsv($out, ['Scope', $summary['meta']['range']['start'].' → '.$summary['meta']['range']['end']]);
-        fputcsv($out, ['Filters', $filterContext]);
-        fputcsv($out, []);
-        fputcsv($out, ['KPI', 'Value']);
+        $this->writeCsvRow($out, [$label]);
+        $this->writeCsvRow($out, ['Generated '.now('Africa/Monrovia')->format('Y-m-d H:i').' by '.$user->full_name]);
+        $this->writeCsvRow($out, ['Scope', $summary['meta']['range']['start'].' → '.$summary['meta']['range']['end']]);
+        $this->writeCsvRow($out, ['Filters', $filterContext]);
+        $this->writeCsvRow($out, []);
+        $this->writeCsvRow($out, ['KPI', 'Value']);
         foreach ($summary['kpis'] as $k) {
             $value = isset($k['money']) && $k['money'] ? number_format((float) $k['value'], 2) : $k['value'];
-            fputcsv($out, [$k['label'], $value]);
+            $this->writeCsvRow($out, [$k['label'], $value]);
         }
-        fputcsv($out, []);
-        fputcsv($out, ['Distribution — '.($summary['meta']['group_options'][$summary['meta']['group_by']] ?? $summary['meta']['group_by'])]);
-        fputcsv($out, ['Label', 'Value']);
+        $this->writeCsvRow($out, []);
+        $this->writeCsvRow($out, ['Distribution — '.($summary['meta']['group_options'][$summary['meta']['group_by']] ?? $summary['meta']['group_by'])]);
+        $this->writeCsvRow($out, ['Label', 'Value']);
         foreach ($summary['bar']['data'] as $row) {
             $v = isset($summary['bar']['metric_label']) && $summary['bar']['metric_label'] === 'Value'
                 ? number_format((float) $row['value'], 2) : $row['value'];
-            fputcsv($out, [$row['label'], $v]);
+            $this->writeCsvRow($out, [$row['label'], $v]);
         }
-        fputcsv($out, []);
-        fputcsv($out, ['Detail records']);
-        fputcsv($out, $summary['records']['columns']);
+        $this->writeCsvRow($out, []);
+        $this->writeCsvRow($out, ['Detail records']);
+        $this->writeCsvRow($out, $summary['records']['columns']);
         foreach ($summary['records']['rows'] as $row) {
-            fputcsv($out, array_map(fn ($v) => is_array($v) ? json_encode($v) : $v, $row));
+            $this->writeCsvRow($out, array_map(fn ($v) => is_array($v) ? json_encode($v) : $v, $row));
         }
-        fputcsv($out, []);
-        fputcsv($out, ['Total records', $summary['records']['total']]);
+        $this->writeCsvRow($out, []);
+        $this->writeCsvRow($out, ['Total records', $summary['records']['total']]);
         rewind($out);
 
         return stream_get_contents($out);
@@ -1066,13 +1081,47 @@ class AnalyticsController extends Controller
         return [$start, $end];
     }
 
+    /**
+     * Bill-ledger authority: roles that lodge, process, verify, deliver or
+     * report on bills. Pure bill.view readers (Valuation Officers, etc.) are
+     * NOT ledger owners — the Bills analytics metric stays hidden for them.
+     */
+    private function canViewBillLedger(User $user): bool
+    {
+        if ($user->hasAnyPermission([
+            'bills.create', 'bills.edit', 'bills.assign', 'bills.amend_document', 'bills.amend_penalty_interest',
+            'records.view', 'records.edit',
+            'payments.view_queue', 'payments.verify', 'payments.reject',
+            'enforcement.bill_delivery', 'enforcement.visit',
+            'reports.view',
+        ])) {
+            return true;
+        }
+
+        // Section+ scopes are accountable for the ledger even without a
+        // specific acting permission (their numbers are their mandate).
+        return in_array($user->scopeLevel(), [User::SCOPE_SECTION, User::SCOPE_DIVISION, User::SCOPE_SYSTEM], true);
+    }
+
+    /** Per-metric ledger restrictions beyond the flat permission gate. */
+    private function authorizeMetricView(User $user, string $metric): void
+    {
+        if ($metric === 'bills' && ! $this->canViewBillLedger($user)) {
+            abort(403, 'Bill-ledger analytics requires bill-handling authority.');
+        }
+    }
+
     private function availableMetrics(User $user): array
     {
         $out = [];
         foreach (self::METRICS as $key => $meta) {
-            if ($user->hasAnyPermission($meta['perms'])) {
-                $out[$key] = $meta['label'];
+            if (! $user->hasAnyPermission($meta['perms'])) {
+                continue;
             }
+            if ($key === 'bills' && ! $this->canViewBillLedger($user)) {
+                continue;
+            }
+            $out[$key] = $meta['label'];
         }
 
         return $out;
@@ -1127,7 +1176,7 @@ class AnalyticsController extends Controller
                 : [];
         }
 
-        return \Illuminate\Support\Facades\DB::table('sections')
+        return DB::table('sections')
             ->orderBy('name')
             ->get(['id', 'name'])
             ->all();

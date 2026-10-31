@@ -2,23 +2,25 @@ import { useState } from 'react'
 import { View, Text, TouchableOpacity, StyleSheet, Alert, Image } from 'react-native'
 import * as Location from 'expo-location'
 import * as ImagePicker from 'expo-image-picker'
+import NetInfo from '@react-native-community/netinfo'
 import api from '../api'
 import { useSync } from '../sync'
 import { can, serverMessage, isOnlineRejection } from '../rbac'
 import { useAuth } from '../auth'
 import { theme } from '../theme'
 import { Screen, Field, Btn, Input, Card, ChipRow, Empty } from '../components'
+import { photoToUpload } from '../image'
 
 const PROPERTY_CLASSIFICATIONS = [
   'Residential',
+  'Vacant Land',
+  'Agricultural',
+  'Government',
+  'Community',
   'Commercial',
   'Industrial',
-  'Unimproved Land',
-  'Residential Building on public land',
-  'Commercial Building on public land',
-  'Developed Land Residential',
-  'Vacant land',
   'Mixed Use',
+  'Institutional',
 ]
 
 const PROPERTY_TYPES = ['New Property', 'Existing Property']
@@ -26,7 +28,7 @@ const PROPERTY_TYPES = ['New Property', 'Existing Property']
 const A = (set) => (v) => set(v ?? '')
 
 export default function NewDiscoveryScreen({ navigation }) {
-  const { queueAndFlush } = useSync()
+  const { enqueue, enqueueDependent, processOutbox } = useSync()
   const { user } = useAuth()
 
   const [ownerName, setOwnerName] = useState('')
@@ -90,30 +92,39 @@ export default function NewDiscoveryScreen({ navigation }) {
 
   const takePhoto = async () => {
     if (!(await requireCamera())) return
-    const result = await ImagePicker.launchCameraAsync({ quality: 0.7 })
-    if (!result.canceled) setPhotos((p) => [...p, result.assets[0].uri])
+    const result = await ImagePicker.launchCameraAsync({ quality: 0.6 })
+    if (!result.canceled) {
+      const a = result.assets[0]
+      setPhotos((p) => [...p, { uri: a.uri, fromCamera: true }])
+    }
   }
 
   const uploadPhoto = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync()
     if (status !== 'granted') return Alert.alert('Permission', 'Gallery access required to attach photos.')
-    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: 'images', quality: 0.7, allowsMultipleSelection: true })
-    if (!result.canceled) setPhotos((p) => [...p, ...result.assets.map((a) => a.uri)])
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: 'images', quality: 0.6, allowsMultipleSelection: true })
+    if (!result.canceled) setPhotos((p) => [...p, ...result.assets.map((a) => ({ uri: a.uri, fromCamera: false }))])
   }
 
   const removePhoto = (i) => setPhotos((p) => p.filter((_, x) => x !== i))
 
   const takeProof = async () => {
     if (!(await requireCamera())) return
-    const result = await ImagePicker.launchCameraAsync({ quality: 0.7 })
-    if (!result.canceled) setProof(result.assets[0].uri)
+    const result = await ImagePicker.launchCameraAsync({ quality: 0.6 })
+    if (!result.canceled) {
+      const a = result.assets[0]
+      setProof({ uri: a.uri, fromCamera: true })
+    }
   }
 
   const uploadProof = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync()
     if (status !== 'granted') return Alert.alert('Permission', 'Gallery access required to attach a file.')
-    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: 'images', quality: 0.7 })
-    if (!result.canceled) setProof(result.assets[0].uri)
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: 'images', quality: 0.6 })
+    if (!result.canceled) {
+      const a = result.assets[0]
+      setProof({ uri: a.uri, fromCamera: false })
+    }
   }
 
   const submit = async () => {
@@ -141,33 +152,27 @@ export default function NewDiscoveryScreen({ navigation }) {
       gps_captured_at: gpsLat && gpsLng ? new Date().toISOString() : undefined,
       discovery_date: discoveryDate || undefined,
     }
+const shotBody = async (shot, type, extra = {}) => ({
+  photo_type: type,
+  data_uri: await photoToUpload(shot),
+  gps_lat: payload.gps_lat,
+  gps_lng: payload.gps_lng,
+  ...extra,
+})
     try {
       const r = await api.post('/discoveries', payload)
       const d = r.data?.data || {}
       const id = d.id
       let attached = 0
-      for (const uri of photos) {
+      for (const shot of photos) {
         try {
-          await api.post('/evidence/photos', {
-            photo_type: 'PROPERTY_FULL_VIEW',
-            discovery_id: id,
-            path: uri,
-            gps_lat: payload.gps_lat,
-            gps_lng: payload.gps_lng,
-          })
+          await api.post('/evidence/photos', await shotBody(shot, 'PROPERTY_FULL_VIEW', { discovery_id: id }))
           attached++
         } catch { /* a photo that fails is not fatal — it can be re-added later */ }
       }
       if (proof) {
         try {
-          await api.post('/evidence/photos', {
-            photo_type: 'OTHER',
-            discovery_id: id,
-            path: proof,
-            gps_lat: payload.gps_lat,
-            gps_lng: payload.gps_lng,
-            remarks: 'Proof of ownership (optional)',
-          })
+          await api.post('/evidence/photos', await shotBody(proof, 'OTHER', { discovery_id: id, remarks: 'Proof of ownership (optional)' }))
         } catch { /* optional proof of ownership; non-fatal */ }
       }
       Alert.alert('Discovery recorded', `${d.discovery_reference || 'Record'} registered — ${attached} of ${photos.length} photo(s) attached.`, [
@@ -177,8 +182,19 @@ export default function NewDiscoveryScreen({ navigation }) {
       if (isOnlineRejection(ex)) {
         Alert.alert('Not recorded', serverMessage(ex, 'The server rejected the discovery.'))
       } else {
-        await queueAndFlush('discovery', payload)
-        Alert.alert('Saved offline', 'Discovery queued — it will sync when you are online.', [{ text: 'OK', onPress: () => navigation.goBack() }])
+        // Offline: queue the discovery with its photos. The photo rows carry a
+        // parent link so the syncer attaches them only after the discovery has
+        // synced and returned its server id — no field photo is lost.
+        const txnId = await enqueue('discovery', payload)
+        for (const shot of photos) {
+          await enqueueDependent('evidence', await shotBody(shot, 'PROPERTY_FULL_VIEW'), txnId)
+        }
+        if (proof) {
+          await enqueueDependent('evidence', await shotBody(proof, 'OTHER', { remarks: 'Proof of ownership (optional)' }), txnId)
+        }
+        const net = await NetInfo.fetch()
+        if (net.isConnected) await processOutbox()
+        Alert.alert('Saved offline', `Discovery queued with ${photos.length} photo(s) — they will sync when you are online.`, [{ text: 'OK', onPress: () => navigation.goBack() }])
       }
     } finally { setBusy(false) }
   }
@@ -280,9 +296,9 @@ export default function NewDiscoveryScreen({ navigation }) {
         </View>
         {photos.length > 0 && (
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
-            {photos.map((uri, i) => (
+            {photos.map((shot, i) => (
               <TouchableOpacity key={i} onPress={() => removePhoto(i)}>
-                <Image source={{ uri }} style={{ width: 84, height: 84, borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border }} />
+                <Image source={{ uri: shot.uri }} style={{ width: 84, height: 84, borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border }} />
               </TouchableOpacity>
             ))}
           </View>
@@ -291,7 +307,7 @@ export default function NewDiscoveryScreen({ navigation }) {
         <Text style={s.photoLabel}>Proof of ownership <Text style={{ color: theme.colors.textLight }}>(optional)</Text></Text>
         {proof ? (
           <TouchableOpacity onPress={() => setProof(null)} style={{ marginTop: 8 }}>
-            <Image source={{ uri: proof }} style={{ width: 112, height: 84, borderRadius: 10, borderWidth: 1.5, borderColor: theme.colors.success }} />
+            <Image source={{ uri: proof.uri }} style={{ width: 112, height: 84, borderRadius: 10, borderWidth: 1.5, borderColor: theme.colors.success }} />
           </TouchableOpacity>
         ) : (
           <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>

@@ -9,15 +9,15 @@ return new class extends Migration
     public function up(): void
     {
         // New Property Discovery — first-class workflow. Property ID / Document #
-        // are LITAS identifiers: blank until the source system creates them.
+        // are source-system identifiers: blank until the source system creates them.
         Schema::create('property_discoveries', function (Blueprint $table) {
             $table->id();
             $table->string('discovery_reference')->unique();
             // Workflow: DISCOVERED → SUBMITTED → UNDER_MANAGER_REVIEW → CLASSIFIED
-            // → SENT_TO_ACCOUNT | VALUATION_REQUIRED → ... → PROCESSED_IN_LITAS → COMPLETED
+            // → SENT_TO_ACCOUNT | VALUATION_REQUIRED → ... → REGISTERED → COMPLETED
             $table->string('status')->default('DISCOVERED')->index();
 
-            // Property information (LITAS IDs stay blank — never generated)
+            // Property information (source-system IDs stay blank — never generated)
             $table->string('owner_name')->nullable();
             $table->string('owner_contact')->nullable();
             $table->string('tin', 40)->nullable();
@@ -33,7 +33,7 @@ return new class extends Migration
             $table->string('occupancy_use', 100)->nullable();
             $table->text('description')->nullable();
 
-            // LITAS identifiers — filled only when the source output exists
+            // Source-system identifiers — filled only when the source output exists
             $table->string('property_id', 60)->nullable()->index();
             $table->string('document_number', 80)->nullable()->index();
 

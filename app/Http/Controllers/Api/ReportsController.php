@@ -7,8 +7,14 @@ use App\Models\Payment;
 use App\Models\PaymentVerification;
 use App\Models\PropertyBill;
 use App\Models\PropertyDiscovery;
+use App\Models\StaffTarget;
 use App\Models\Task;
+use App\Models\User;
 use App\Models\Valuation;
+use App\Services\AssignmentEligibilityService;
+use App\Services\BillScopeService;
+use App\Services\ManagementPerformanceService;
+use App\Traits\SafeCsv;
 use App\Traits\ScopeDateFilter;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\Request;
@@ -18,6 +24,7 @@ use Illuminate\Http\Request;
  */
 class ReportsController extends Controller
 {
+    use SafeCsv;
     use ScopeDateFilter;
 
     public function bills(Request $request)
@@ -139,6 +146,10 @@ class ReportsController extends Controller
             'owner_name' => $d->owner_name,
             'property_address' => $d->property_address,
             'property_classification' => $d->property_classification,
+            'value_declaration_type' => $d->value_declaration_type,
+            'declared_assessed_value' => $d->declared_assessed_value,
+            'documentary_value' => $d->documentary_value,
+            'official_assessed_value' => $d->official_assessed_value,
             'decision_path' => $d->decision_path,
             'status' => $d->status,
             'discovered_by' => $d->relationLoaded('discoverer') ? $d->discoverer?->full_name : null,
@@ -171,6 +182,201 @@ class ReportsController extends Controller
         ]);
 
         return response()->json(['data' => ['rows' => $rows]]);
+    }
+
+    public function myTasks(Request $request)
+    {
+        $user = $request->user();
+        abort_unless($user->canPermission('tasks.view_own'), 403, 'Missing permission: tasks.view_own');
+
+        $rows = $this->myTaskQuery($request)
+            ->orderByDesc('created_at')
+            ->paginate($request->query('per_page', 50))
+            ->withQueryString();
+        $rows->getCollection()->transform(fn ($task) => [
+            'id' => $task->id,
+            'task_reference' => $task->task_reference,
+            'task_type' => $task->task_type,
+            'status' => $task->status,
+            'due_date' => $task->due_date?->toDateString(),
+            'created_at' => $task->created_at?->toISOString(),
+            'completed_at' => $task->completed_at?->toISOString(),
+        ]);
+
+        return response()->json(['data' => ['rows' => $rows]]);
+    }
+
+    public function myPerformance(Request $request)
+    {
+        abort_unless(! app(ManagementPerformanceService::class)->isManagementRole($request->user()), 403, 'Management roles use the management performance report.');
+
+        $targets = $this->myPerformanceRows($request->user());
+        $targetTotal = array_sum(array_column($targets, 'target_value'));
+        $achievedTotal = array_sum(array_column($targets, 'achieved_value'));
+
+        return response()->json(['data' => [
+            'targets' => $targets,
+            'overall' => [
+                'target_value' => round($targetTotal, 2),
+                'achieved_value' => round($achievedTotal, 2),
+                'completion_rate' => $targetTotal > 0 ? round(($achievedTotal / $targetTotal) * 100, 1) : null,
+                'targets_count' => count($targets),
+            ],
+        ]]);
+    }
+
+    public function exportMyTasks(Request $request)
+    {
+        $user = $request->user();
+        abort_unless($user->canPermission('tasks.view_own'), 403, 'Missing permission: tasks.view_own');
+
+        $rows = $this->myTaskQuery($request)->orderByDesc('created_at')->get()->map(fn ($task) => [
+            'Task Reference' => $task->task_reference,
+            'Task Type' => $task->task_type,
+            'Status' => $task->status,
+            'Due Date' => $task->due_date?->toDateString(),
+            'Created At' => $task->created_at?->toISOString(),
+            'Completed At' => $task->completed_at?->toISOString(),
+        ])->all();
+
+        return $this->downloadPersonalReport('My Tasks', array_keys($rows[0] ?? [
+            'Task Reference' => null,
+            'Task Type' => null,
+            'Status' => null,
+            'Due Date' => null,
+            'Created At' => null,
+            'Completed At' => null,
+        ]), $rows, $request);
+    }
+
+    public function exportMyPerformance(Request $request)
+    {
+        abort_unless(! app(ManagementPerformanceService::class)->isManagementRole($request->user()), 403, 'Management roles use the management performance report.');
+
+        $rows = array_map(fn ($target) => [
+            'Metric' => $target['metric'],
+            'Target' => $target['target_value'],
+            'Achieved' => $target['achieved_value'],
+            'Completion Rate' => $target['completion_rate'].'%',
+            'Measurement Unit' => $target['measurement_unit'],
+            'Frequency' => $target['frequency'],
+            'Period' => $target['period'],
+            'Start Date' => $target['start_date'],
+            'End Date' => $target['end_date'],
+        ], $this->myPerformanceRows($request->user()));
+
+        return $this->downloadPersonalReport('My Performance', array_keys($rows[0] ?? [
+            'Metric' => null,
+            'Target' => null,
+            'Achieved' => null,
+            'Completion Rate' => null,
+            'Measurement Unit' => null,
+            'Frequency' => null,
+            'Period' => null,
+            'Start Date' => null,
+            'End Date' => null,
+        ]), $rows, $request);
+    }
+
+    public function managementPerformance(Request $request, ManagementPerformanceService $performance)
+    {
+        return response()->json(['data' => $performance->summarize($request->user())]);
+    }
+
+    public function exportManagementPerformance(Request $request, ManagementPerformanceService $performance)
+    {
+        $summary = $performance->summarize($request->user());
+        $rows = array_map(fn (array $period) => [
+            'Metric' => $period['metric'],
+            'Measurement Unit' => $period['measurement_unit'],
+            'Period Start' => $period['start_date'],
+            'Period End' => $period['end_date'],
+            'Eligible Target' => $period['target_value'],
+            'Eligible Achievement' => $period['achieved_value'],
+            'Achievement Rate' => $period['completion_rate'] === null ? 'Unavailable' : $period['completion_rate'].'%',
+            'Contributing Staff' => $period['contributing_staff_count'],
+            'Attribution Limited' => $period['attribution_limited'] ? 'Yes' : 'No',
+        ], $summary['periods']);
+
+        return $this->downloadPersonalReport(
+            'Management Performance',
+            array_keys($rows[0] ?? [
+                'Metric' => null,
+                'Measurement Unit' => null,
+                'Period Start' => null,
+                'Period End' => null,
+                'Eligible Target' => null,
+                'Eligible Achievement' => null,
+                'Achievement Rate' => null,
+                'Contributing Staff' => null,
+                'Attribution Limited' => null,
+            ]),
+            $rows,
+            $request
+        );
+    }
+
+    private function myTaskQuery(Request $request)
+    {
+        $query = Task::query()->where('assigned_to', $request->user()->id);
+        $viewableTypes = AssignmentEligibilityService::viewableTypes($request->user());
+        if ($viewableTypes !== null) {
+            $query->whereIn('task_type', $viewableTypes);
+        }
+
+        $this->applyDateFilter($request, $query, 'created_at');
+        if ($request->filled('status')) {
+            $query->where('status', $request->query('status'));
+        }
+
+        return $query;
+    }
+
+    private function myPerformanceRows(User $user): array
+    {
+        return StaffTarget::query()
+            ->where('user_id', $user->id)
+            ->where('status', 'Approved')
+            ->orderByDesc('start_date')
+            ->orderByDesc('id')
+            ->get()
+            ->map(function (StaffTarget $target) {
+                [$start, $end] = $target->effectiveWindow();
+                $achieved = round($target->computeAchievedValue(), 2);
+                $targetValue = (float) $target->target_value;
+
+                return [
+                    'id' => $target->id,
+                    'metric' => $target->metric,
+                    'target_value' => $targetValue,
+                    'achieved_value' => $achieved,
+                    'completion_rate' => $targetValue > 0 ? round(($achieved / $targetValue) * 100, 1) : 0,
+                    'measurement_unit' => $target->measurement_unit,
+                    'frequency' => $target->frequency,
+                    'period' => $target->period,
+                    'start_date' => $start->toDateString(),
+                    'end_date' => $end->toDateString(),
+                ];
+            })
+            ->all();
+    }
+
+    private function downloadPersonalReport(string $title, array $headers, array $rows, Request $request)
+    {
+        $format = $request->query('format', 'csv');
+        abort_unless(in_array($format, ['csv', 'pdf'], true), 422, 'format must be csv or pdf.');
+
+        $filename = 'retd_'.strtolower(str_replace(' ', '_', $title)).'_'.date('Ymd_His').'.'.$format;
+        if ($format === 'csv') {
+            return response($this->toCsv($title, $headers, $rows, $request->user(), $request))
+                ->header('Content-Type', 'text/csv; charset=UTF-8')
+                ->header('Content-Disposition', "attachment; filename=\"{$filename}\"");
+        }
+
+        return Pdf::setOption('isPhpEnabled', false)
+            ->loadHTML($this->toPdfHtml($title, $headers, $rows, $request->user(), $request))
+            ->setPaper('a4', 'landscape')
+            ->download($filename);
     }
 
     /**
@@ -210,7 +416,11 @@ class ReportsController extends Controller
 
         $html = $this->toPdfHtml($title, $headers, $rows, $user, $request, $kpis);
 
-        return Pdf::setOption('isPhpEnabled', true)
+        // PHP evaluation inside the PDF template is deliberately disabled: the
+        // filter context comes from raw query parameters and the worksheet
+        // contains taxpayer-supplied values, so the renderer must treat all of
+        // it as inert text. dompdf's page-number footer works without it.
+        return Pdf::setOption('isPhpEnabled', false)
             ->loadHTML($html)->setPaper('a4', 'landscape')->download($filename);
     }
 
@@ -256,16 +466,20 @@ class ReportsController extends Controller
             $this->applyReportFilters($request, $query, 'valuations');
             $kpis[] = ['label' => 'Total valuations', 'value' => (string) (clone $query)->count()];
             $kpis[] = ['label' => 'Assessed value', 'value' => '$'.number_format((float) (clone $query)->sum('assessed_value'), 2)];
-            $kpis[] = ['label' => 'In review', 'value' => (string) (clone $query)->whereIn('status', ['Submitted', 'Manager Review'])->count()];
-            $kpis[] = ['label' => 'AC approval', 'value' => (string) (clone $query)->where('status', 'AC Approval')->count()];
+            $kpis[] = ['label' => 'In review', 'value' => (string) (clone $query)->whereIn('status', [Valuation::STATUS_SUBMITTED_TO_MANAGER, Valuation::STATUS_UNDER_MANAGER_REVIEW])->count()];
+            $kpis[] = ['label' => 'AC approval', 'value' => (string) (clone $query)->whereIn('status', [Valuation::STATUS_SUBMITTED_TO_AC, Valuation::STATUS_AWAITING_AC_APPROVAL])->count()];
         } elseif ($kind === 'discoveries') {
             $query = PropertyDiscovery::query();
             $this->applyDateFilter($request, $query, 'discovery_date');
             $this->applyReportFilters($request, $query, 'discoveries');
             $kpis[] = ['label' => 'Total discoveries', 'value' => (string) (clone $query)->count()];
-            $kpis[] = ['label' => 'Requiring valuation', 'value' => (string) (clone $query)->where('decision_path', 'valuation')->whereIn('status', ['VALUATION_REQUIRED', 'VALUATION_ASSIGNED', 'UNDER_VALUATION', 'VALUATION_MANAGER_REVIEW', 'PENDING_AC_APPROVAL'])->count()];
-            $kpis[] = ['label' => 'Awaiting AC approval', 'value' => (string) (clone $query)->where('status', 'PENDING_AC_APPROVAL')->count()];
-            $kpis[] = ['label' => 'Registered in LITAS', 'value' => (string) (clone $query)->whereNotNull('property_id')->where('property_id', '!=', '')->count()];
+            $kpis[] = ['label' => 'Self declared', 'value' => (string) (clone $query)->where('value_declaration_type', PropertyDiscovery::VALUE_DECLARATION_SELF_DECLARED)->count()];
+            $kpis[] = ['label' => 'Documentary', 'value' => (string) (clone $query)->where('value_declaration_type', PropertyDiscovery::VALUE_DECLARATION_DOCUMENTARY)->count()];
+            $kpis[] = ['label' => 'Valuation-required', 'value' => (string) (clone $query)->where('value_declaration_type', PropertyDiscovery::VALUE_DECLARATION_VALUATION)->count()];
+            $kpis[] = ['label' => 'Total declared value', 'value' => '$'.number_format((float) (clone $query)->whereNotNull('declared_assessed_value')->sum('declared_assessed_value'), 2)];
+            $kpis[] = ['label' => 'Requiring valuation', 'value' => (string) (clone $query)->where('decision_path', 'valuation')->whereIn('status', [PropertyDiscovery::STATUS_AWAITING_VALUATION, PropertyDiscovery::STATUS_REFERRED_VALUATION, PropertyDiscovery::STATUS_UNDER_VALUATION, PropertyDiscovery::STATUS_AWAITING_AC_APPROVAL])->count()];
+            $kpis[] = ['label' => 'Awaiting AC approval', 'value' => (string) (clone $query)->where('status', PropertyDiscovery::STATUS_AWAITING_AC_APPROVAL)->count()];
+            $kpis[] = ['label' => 'Registered', 'value' => (string) (clone $query)->whereNotNull('property_id')->where('property_id', '!=', '')->count()];
         } else {
             $query = PaymentVerification::query();
             $this->applyDateFilter($request, $query, 'created_at');
@@ -331,12 +545,12 @@ class ReportsController extends Controller
         }
 
         if ($kind === 'enforcement') {
-        $query = Task::query()->with(['assignedTo:id,full_name', 'bill:id,property_id,tin'])->where('section', 'Enforcement');
-        $this->applyDateFilter($request, $query, 'created_at');
-        $this->applyReportFilters($request, $query, 'enforcement');
-        $query->orderBy(
-            \DB::raw('(SELECT `tin` FROM `property_bills` WHERE `property_bills`.`id` = `tasks`.`reference_id` LIMIT 1)')
-        );
+            $query = Task::query()->with(['assignedTo:id,full_name', 'bill:id,property_id,tin'])->where('section', 'Enforcement');
+            $this->applyDateFilter($request, $query, 'created_at');
+            $this->applyReportFilters($request, $query, 'enforcement');
+            $query->orderBy(
+                \DB::raw('(SELECT `tin` FROM `property_bills` WHERE `property_bills`.`id` = `tasks`.`reference_id` LIMIT 1)')
+            );
             $rows = $query->get()->map(fn ($t) => [
                 'Property ID' => $t->bill?->property_id,
                 'TIN' => $t->bill?->tin,
@@ -375,18 +589,22 @@ class ReportsController extends Controller
             $this->applyReportFilters($request, $query, 'discoveries');
             $rows = $query->orderByDesc('id')->get()->map(fn ($d) => [
                 'Reference' => $d->discovery_reference,
-                'LITAS Property ID' => $d->property_id ?: '— (unregistered)',
+                'Property ID' => $d->property_id ?: '— (unregistered)',
                 'TIN' => $d->tin ?: '—',
                 'Owner' => $d->owner_name ?: '—',
                 'Address' => $d->property_address ?: '—',
                 'Classification' => $d->property_classification ?: '—',
+                'Value Declaration' => $d->value_declaration_type ?: '—',
+                'Declared / Assessed' => $d->declared_assessed_value ?? $d->declared_value,
+                'Documentary' => $d->documentary_value,
+                'Official Assessed' => $d->official_assessed_value,
                 'Path' => $d->decision_path ?: '—',
                 'Status' => $d->status,
                 'Discovered By' => $d->relationLoaded('discoverer') ? $d->discoverer?->full_name : '—',
                 'Date' => $d->discovery_date?->toDateString(),
             ])->toArray();
 
-            return [$title, ['Reference', 'LITAS Property ID', 'TIN', 'Owner', 'Address', 'Classification', 'Path', 'Status', 'Discovered By', 'Date'], $rows];
+            return [$title, ['Reference', 'Property ID', 'TIN', 'Owner', 'Address', 'Classification', 'Value Declaration', 'Declared / Assessed', 'Documentary', 'Official Assessed', 'Path', 'Status', 'Discovered By', 'Date'], $rows];
         }
 
         $query = PaymentVerification::query()->with('verifier:id,full_name');
@@ -408,11 +626,87 @@ class ReportsController extends Controller
     }
 
     /**
+     * Data scope for every report dataset, keyed by report kind.
+     *
+     * Custodians of the full register (System/Division scopes, Account
+     * Manager) are unrestricted; everyone else is bounded to the records they
+     * could open in the working UI — bills/payments via the canonical bill
+     * scope, valuations/discoveries via the staffing scope.
+     */
+    private function applyReportScope($query, string $kind, User $user): void
+    {
+        $billIds = BillScopeService::visibleBillIds($user);
+
+        if ($billIds === null) {
+            return;
+        }
+
+        switch ($kind) {
+            case 'bills':
+                $query->whereIn('id', $billIds);
+
+                return;
+
+            case 'collections':
+            case 'payment-queue':
+                $query->whereIn('bill_id', $billIds);
+
+                return;
+
+            case 'enforcement':
+                $query->where(function ($q) use ($billIds) {
+                    $q->where('reference_type', '!=', 'property_bill')
+                        ->orWhereIn('reference_id', $billIds);
+                });
+
+                return;
+
+            case 'valuations':
+                $staffIds = $this->staffIdsFor($user);
+                $query->where(function ($q) use ($billIds, $staffIds) {
+                    $q->whereIn('bill_id', $billIds)
+                        ->orWhere(function ($qq) use ($staffIds) {
+                            $qq->whereNull('bill_id')->whereIn('valuation_officer_id', $staffIds);
+                        });
+                });
+
+                return;
+
+            case 'discoveries':
+                $query->whereIn('discovered_by', $this->staffIdsFor($user));
+
+                return;
+        }
+    }
+
+    /** Active staff ids within the user's own/team/section data scope. */
+    private function staffIdsFor(User $user): array
+    {
+        $scope = $user->scopeLevel();
+
+        if ($scope === 'section') {
+            return User::where('section_id', $user->section_id)->where('is_active', true)->pluck('id')->all();
+        }
+
+        if ($scope === 'team') {
+            return User::where('supervisor_id', $user->id)->where('is_active', true)->pluck('id')->all();
+        }
+
+        return [$user->id];
+    }
+
+    /**
      * Additional report filters (beyond the shared date range) — applied both
      * to the on-screen list and to CSV/PDF exports.
      */
     private function applyReportFilters(Request $request, $query, string $kind)
     {
+        // Every report surface (on-screen lists AND CSV/PDF exports, which all
+        // share this filter builder) is data-scoped to the caller — a
+        // section/team/own-scope user must not enumerate records they could not
+        // open elsewhere. Custodians of the whole register stay unrestricted.
+        $this->applyReportScope($query, $kind, $request->user());
+
         $map = [
             'bills' => [
                 'case_status' => 'case_status',
@@ -437,6 +731,7 @@ class ReportsController extends Controller
                 'decision_path' => 'decision_path',
                 'discovered_by' => 'discovered_by',
                 'property_classification' => 'property_classification',
+                'value_declaration_type' => 'value_declaration_type',
             ],
             'payment-queue' => [
                 'verification_status' => 'verification_status',
@@ -455,7 +750,7 @@ class ReportsController extends Controller
     private function filterContext(Request $request): string
     {
         $parts = [];
-        foreach (['filter', 'date', 'month', 'quarter', 'year', 'start_date', 'end_date', 'status', 'case_status', 'payment_status', 'recipient_type', 'logged_by', 'assigned_to', 'verified_by', 'assigned_to_id', 'valuation_officer', 'verification_status', 'match_status'] as $key) {
+        foreach (['filter', 'date', 'month', 'quarter', 'year', 'start_date', 'end_date', 'status', 'case_status', 'payment_status', 'recipient_type', 'logged_by', 'assigned_to', 'verified_by', 'assigned_to_id', 'valuation_officer', 'verification_status', 'match_status', 'decision_path', 'discovered_by', 'property_classification', 'value_declaration_type'] as $key) {
             if ($request->filled($key)) {
                 $parts[] = "{$key}={$request->query($key)}";
             }
@@ -475,24 +770,24 @@ class ReportsController extends Controller
     {
         $out = fopen('php://temp', 'r+');
         fwrite($out, "\xEF\xBB\xBF");
-        fputcsv($out, [$this->exportTitle($title, $request)]);
-        fputcsv($out, ['Generated '.now('Africa/Monrovia')->format('Y-m-d H:i').' by '.$user->full_name]);
-        fputcsv($out, ['Endpoint', $request->path()]);
-        fputcsv($out, ['Summary: '.count($rows).' record(s)', 'Filters: '.$this->filterContext($request)]);
-        fputcsv($out, []);
+        $this->writeCsvRow($out, [$this->exportTitle($title, $request)]);
+        $this->writeCsvRow($out, ['Generated '.now('Africa/Monrovia')->format('Y-m-d H:i').' by '.$user->full_name]);
+        $this->writeCsvRow($out, ['Endpoint', $request->path()]);
+        $this->writeCsvRow($out, ['Summary: '.count($rows).' record(s)', 'Filters: '.$this->filterContext($request)]);
+        $this->writeCsvRow($out, []);
         if ($kpis) {
-            fputcsv($out, ['KPI', 'Value']);
+            $this->writeCsvRow($out, ['KPI', 'Value']);
             foreach ($kpis as $k) {
-                fputcsv($out, [$k['label'], $k['value']]);
+                $this->writeCsvRow($out, [$k['label'], $k['value']]);
             }
-            fputcsv($out, []);
+            $this->writeCsvRow($out, []);
         }
-        fputcsv($out, $headers);
+        $this->writeCsvRow($out, $headers);
         foreach ($rows as $row) {
-            fputcsv($out, array_values($row));
+            $this->writeCsvRow($out, array_values($row));
         }
-        fputcsv($out, []);
-        fputcsv($out, ['Total records', count($rows)]);
+        $this->writeCsvRow($out, []);
+        $this->writeCsvRow($out, ['Total records', count($rows)]);
         rewind($out);
 
         return stream_get_contents($out);
@@ -502,7 +797,7 @@ class ReportsController extends Controller
     {
         $heading = $this->exportTitle($title, $request);
         $meta = 'Generated '.now('Africa/Monrovia')->format('Y-m-d H:i').' by '.e($user->full_name ?? 'System');
-        $meta .= ' · Endpoint '.$request->path().' · Summary: '.count($rows).' record(s) · Filters: '.$this->filterContext($request);
+        $meta .= ' · Endpoint '.$request->path().' · Summary: '.count($rows).' record(s) · Filters: '.$this->escape($this->filterContext($request));
 
         $head = '<tr>'.collect($headers)->map(fn ($h) => '<th>'.e($h).'</th>')->join('').'</tr>';
         $body = collect($rows)->map(fn ($row) => '<tr>'.collect($row)->map(fn ($v) => '<td>'.e((string) ($v ?? '')).'</td>')->join('').'</tr>')->join('');
@@ -512,10 +807,13 @@ class ReportsController extends Controller
         $html = <<<'HTML'
         <!DOCTYPE html>
         <html><head><meta charset="utf-8"><style>
+        @page { size: A4 landscape; margin: 14mm 10mm 18mm; }
         body { font-family: DejaVu Sans, sans-serif; font-size: 10px; color: #1f2937; }
         h1 { font-size: 15px; margin: 0 0 2px 0; }
         .meta { font-size: 9px; color: #6b7280; margin-bottom: 10px; }
         table { width: 100%; border-collapse: collapse; }
+        thead { display: table-header-group; }
+        tr { page-break-inside: avoid; }
         th { background: #111827; color: #fff; padding: 5px 6px; text-align: left; font-size: 9px; }
         td { padding: 4px 6px; border-bottom: 1px solid #e5e7eb; }
         tr:nth-child(even) td { background: #f9fafb; }
@@ -524,7 +822,7 @@ class ReportsController extends Controller
         <h1>__TITLE__</h1>
         <div class="meta">__META__</div>
         <div>__KPIBAND__</div>
-        <table>__HEAD____BODY__</table>
+        <table><thead>__HEAD__</thead><tbody>__BODY__</tbody></table>
         <div class="meta">Total records: __COUNT__</div>
         <script type="text/php">
             if (isset($pdf)) {

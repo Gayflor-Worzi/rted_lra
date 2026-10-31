@@ -1,9 +1,10 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { View, Text, FlatList, TouchableOpacity, StyleSheet, RefreshControl, Alert, ActivityIndicator } from 'react-native'
 import { useFocusEffect } from '@react-navigation/native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import NetInfo from '@react-native-community/netinfo'
 import { useSync } from '../sync'
+import { useAuth } from '../auth'
 import { getDb, outboxUnsolved, outboxFailed, outboxSynced, outboxDelete } from '../db'
 import { theme } from '../theme'
 import { BrandHeader, Card, Empty, Btn } from '../components'
@@ -13,6 +14,8 @@ const KIND_META = {
   discovery: { icon: '📍', label: 'Property Discovery', tone: theme.colors.navy },
   receipt: { icon: '💰', label: 'Payment Receipt', tone: theme.colors.success },
   action: { icon: '⚡', label: 'Task Action', tone: theme.colors.warning },
+  evidence: { icon: '📷', label: 'Evidence Photo', tone: theme.colors.primary },
+  gps_certify: { icon: '🧭', label: 'GPS Certification', tone: theme.colors.navy },
 }
 
 const FILTERS = [
@@ -38,6 +41,11 @@ function fmtTime(t) {
 
 export default function OutboxScreen() {
   const { counts, pending, syncing, processOutbox, retryRow } = useSync()
+  const { user } = useAuth()
+  const userId = user?.id == null ? null : String(user.id)
+  const userIdRef = useRef(userId)
+  userIdRef.current = userId
+  const loadVersion = useRef(0)
   const insets = useSafeAreaInsets()
   const [filter, setFilter] = useState('pending')
   const [rows, setRows] = useState([])
@@ -45,13 +53,22 @@ export default function OutboxScreen() {
   const [expanded, setExpanded] = useState({})
 
   const load = useCallback(async (f) => {
+    const version = ++loadVersion.current
+    if (userId == null) {
+      setRows([])
+      return
+    }
     await getDb()
     const key = f || filter
     const src = key === 'synced' ? outboxSynced : key === 'failed' ? outboxFailed : outboxUnsolved
-    setRows(await src())
-  }, [filter])
+    const nextRows = await src(userId)
+    if (version === loadVersion.current && userIdRef.current === userId) setRows(nextRows)
+  }, [filter, userId])
 
-  useEffect(() => { load() }, [filter, counts])
+  useEffect(() => {
+    setRows([])
+    load()
+  }, [filter, userId, counts.pending, counts.syncing, counts.synced, counts.failed, load])
 
   useFocusEffect(useCallback(() => {
     (async () => {
@@ -63,7 +80,11 @@ export default function OutboxScreen() {
   const remove = (item) => {
     Alert.alert('Remove pending entry?', 'The local record will be deleted. If it was not yet received by the server it will be lost.', [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Remove', style: 'destructive', onPress: async () => { await outboxDelete(item.id); await load() } },
+      { text: 'Remove', style: 'destructive', onPress: async () => {
+        if (userIdRef.current !== String(item.owner_user_id)) return
+        await outboxDelete(item.id, userIdRef.current)
+        await load()
+      } },
     ])
   }
 
@@ -147,7 +168,7 @@ export default function OutboxScreen() {
                   <DetailRow label="Local ID" value={item.local_transaction_id || '—'} />
                   <DetailRow label="Property / Bill" value={p.property_address || p.billing_number || p.document_number || p.bill_number || '—'} />
                   <DetailRow label="GPS" value={p.gps_coordinate || (p.gps_lat ? `${p.gps_lat}, ${p.gps_lng}` : '—')} />
-                  <DetailRow label="Amount" value={p.amount != null ? `UGX ${p.amount}` : '—'} />
+                  <DetailRow label="Amount" value={p.amount != null ? `USD ${p.amount}` : '—'} />
                   <DetailRow label="Receipt #" value={p.receipt_number || '—'} />
                   <DetailRow label="Notes" value={p.notes || p.remarks || '—'} />
                   {item.kind === 'action' ? <DetailRow label="Action" value={`${p.action} ${p.visit_date ? '@ ' + fmtTime(p.visit_date) : ''}`} /> : null}

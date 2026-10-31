@@ -4,6 +4,12 @@ Severity legend: **[CRIT]** blocks a feature or is a security hole · **[HIGH]**
 
 Every reference is `file:line`. Test suites: 16 suites / 308 tests green — the bugs below are **not** covered by the current automated tests.
 
+> **Status:** Items superseded by the **spec-v4 Discovery/Valuation rebuild** are marked
+> **RESOLVED** below (Discovery intake → `EnforcementController::discover`, controlled
+> routing in `DiscoveryController`, valuation state machine in `ValuationsController`,
+> unified task engine in `TaskController`). Their OLD `file:line` references may no longer
+> exist in the current tree.
+
 ---
 
 ## A. Security & access control
@@ -52,15 +58,13 @@ The mobile app is currently **non-functional for its primary field operations** 
 
 **Fix:** map fields in `VisitFormScreen` (or add them to the request): `enforcement_assignment_id`, a valid `status` value, `bill_delivery_status: 'Delivered'`, `remarks`, `gps_coordinates: "lat,lng"`.
 
-### C2 [CRIT] Assignment "complete"/"escalate" hits a non-existent endpoint — `VisitFormScreen.jsx:61,75`
-Mobile posts `POST /enforcement-assignments/{id}/action`. That route does **not exist** (`routes/api.php` only defines `/`, `/my`, `/{id}`, `/assign`, `/{id}/escalate`, `/{id}/destroy`). Both submit and escalate → 404.
-**Fix:** add a `POST /{id}/action` route+controller (or reuse `/{id}/escalate` with `stage`, and a new complete endpoint).
+### C2 [RESOLVED — backend] Assignment "complete"/"escalate" endpoint
+Mobile posts `POST /enforcement-assignments/{id}/action`. The route **now exists** (`routes/api.php` → `EnforcementController::assignmentAction`). Re-verify the mobile payload (stage/status values) against the controller contract.
 
-### C3 [CRIT] Discovery uses the wrong route + wrong fields — `mobile/src/screens/DiscoverScreen.jsx:65` & `:56-62` vs `routes/api.php` (`enforcement/discovered`, plural) and `DiscoveredPropertiesController.php:66-75`
-- POST to `/enforcement/discover` (singular) → **404**; backend is `/enforcement/discovered`.
-- `property_classification` → backend `preliminary_classification`.
-- Documents: mobile requires `property_photo, proof_of_ownership, nin_slip, cac_cert, utility_bill`; backend requires `property_photo, ownership_legal_document, owner_passport_photo, owner_official_id, property_schedule_form` → **the 4 mandated keys are missing, so even the fixed URL 422s**.
-**Fix:** use `/enforcement/discovered`, rename the field, and align `DOC_KEYS` with the backend's five doc types.
+### C3 [REVISED] Discovery route exists; field contract to re-verify — `mobile/src/screens/DiscoverScreen.jsx` vs `EnforcementController::discover`
+- The backend endpoint is now exactly `POST /enforcement/discover` (singular) → field intake creates a **Draft** `PropertyDiscovery` that then enters controlled routing (`/discoveries`).
+- `property_classification` is the accepted field here (feeds auto-classification).
+- Re-verify `documents` keys + `owner_name`/`gps_lat`/`gps_lng` and that the mobile flow chains into `/discoveries/{id}/submit` for routing.
 
 ### C4 [CRIT] Receipt submission fails validation — `mobile/src/screens/ReceiptScreen.jsx:28-34` vs `PaymentVerificationsController.php:32-37`
 | Mobile sends | Backend expects | Result |
@@ -106,13 +110,11 @@ Labels are server-rendered (safe today), but raw HTML injection should be replac
 
 ## E. Backend logic bugs / data integrity
 
-### E1 [HIGH] Debounced valuation-number collision — `ValuationsController.php:444-456` vs `DiscoveredPropertiesController.php:199-200`
-`nextValuationNumber()` uses max+1 (year-scoped); discovery `route()` uses `withTrashed()->count()+1` across **all** years. Two systems can emit the same `valuation_number` → duplicate-key 500.
-**Fix:** route both through one `nextValuationNumber()` helper.
+### E1 [RESOLVED — spec v4 rebuild] Debounced valuation-number collision
+The old split generators are gone. Both standalone creation and discovery-assignment paths now use the single `Valuation::nextReference()` (`VAL-YYYY-#####`); discoveries use the separate `PropertyDiscovery::nextReference()` (`ND-YYYY-#####`). No shared-sequence collision remains.
 
-### E2 [HIGH] Routed valuation drafts are stranded — `DiscoveredPropertiesController.php` (route)
-`route()` creates the Draft valuation with only `prepared_by_id`; the officer can't edit/submit a draft they don't own (ValuationPolicy ownership), so only a Manager/Admin can unblock it. No guard or relation is set to a Valuation Officer.
-**Fix:** set `valuation_officer_id` (e.g. to the router or an assigned officer) and/or allow the owning officer to claim.
+### E2 [RESOLVED — spec v4 rebuild] Routed valuation drafts stranded
+`DiscoveryController::valReview` assigns the valuation to an officer at creation (**Assigned** → owned by `valuation_officer_id`), and standalone dossiers default to `STATUS_ASSIGNED`. The "un-editable un-owned draft" problem no longer exists.
 
 ### E3 [HIGH] Dead `account_staff_id` ownership logic — `PropertyBillPolicy.php:24,41`; `TaxBillPolicy.php:24,41`
 The "owner" branches are unreachable because nothing ever sets `account_staff_id`. Consequences: Account Managers can't update bills, and assigned Enforcement/Valuation Officers can't view bills through the gates.
@@ -149,8 +151,8 @@ Role names must match the DB string verbatim or notifications silently no-op.
 ### E12 [LOW] Dead scaffolds — `BillDeliveryLog`, `EnforcementEvidence`, `BillFollowupTask`
 Tables/classes exist with no routes, no policy backing (e.g. `BillDeliveryLogPolicy` references non-existent `performed_by_id`; `AttachmentPolicy` references non-existent `label`). `advanceDelivery` writes nothing to `bill_delivery_log`.
 
-### E13 [LOW] Stage-1 valuation review can only forward — `ValuationsController.php:325-332`
-Managers can't reject at stage 1; rejection is AC-only (documented behavior, but likely needs a manager reject).
+### E13 [RESOLVED — spec v4 rebuild] Stage-1 valuation review can only forward
+The rewritten valuation workflow lets the **Valuation Manager return** a submission (`review` → `return` → `Returned for Correction`) as well as confirm to AC; the AC can approve/return/reject, and the Account Manager can refer back. The old forward-only stage-1 review no longer applies.
 
 ---
 
@@ -162,9 +164,9 @@ Managers can't reject at stage 1; rejection is AC-only (documented behavior, but
 | 2 | C1–C4 — align mobile payloads to backend contracts | CRIT |
 | 3 | A1–A2 — authorize portfolio + attachments | CRIT |
 | 4 | B1/C6 — unblock first-login reset (DB column + UI) | CRIT |
-| 5 | C2 — add real assignment action/completion endpoint | CRIT |
+| 5 | ~~C2~~ assignment action endpoint — **exists now**; re-verify mobile payload | CRIT → VERIFY |
 | 6 | A3 — block inactive logins | HIGH |
-| 7 | E1–E3 — valuation numbering, stranded drafts, account_staff_id | HIGH |
+| 7 | ~~E1–E2~~ resolved by workflow rebuild (E3 open) | HIGH |
 | 8 | D1 — BillDetail error recovery | HIGH |
 | 9 | D2/D3 — reset-password screen, remove demo creds | HIGH/MED |
 | 10 | E4–E13 — remaining backend/UX items | MED/LOW |

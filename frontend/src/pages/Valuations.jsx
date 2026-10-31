@@ -1,13 +1,49 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import api, { unwrap, errMsg } from '../api'
-import { Card, Spinner, ErrorBox, Badge, statusTone, PageTitle, fmtMoney, fmtDate, Btn, Input, SuccessBox } from '../ui'
-import { PROPERTY_CLASSIFICATIONS, discoveryStatusInfo } from '../lib/constants'
+import { Card, Spinner, ErrorBox, Badge, statusTone, PageTitle, fmtMoney, fmtDate, fmtNum, Btn, Input, SuccessBox } from '../ui'
+import { PROPERTY_CLASSIFICATIONS, discoveryStatusInfo, valuationStatusInfo } from '../lib/constants'
+import { LAND_LEVEL, descriptionInputIssues, isLandRow, rowAmount, rowDepreciationPct, rowValue, totalAssessedValue } from '../lib/valuationRows'
 import { useAuth } from '../auth'
 import PropertyDetail from '../components/PropertyDetail'
 
-const TABS = ['Draft', 'Submitted', 'AC Approval', 'Approved', 'Rejected', 'Returned']
-const tabFor = (st) => (st === 'Manager Review' ? 'Submitted' : st)
+const TABS = ['Assigned', 'Assessment in Progress', 'Awaiting Review', 'Awaiting AC', 'Awaiting Account & Record', 'Returned for Correction', 'Completed']
+// Which tab holds a given status. Mirrors `Valuation::STAGE_TABS` on the server, which is
+// what each tab's `status=` query actually filters on. The previous version fell through
+// to Completed for "Returned for Correction" and "Registered", so a deep link to a
+// returned or registered valuation opened the wrong tab.
+const STAGE_STATUSES = {
+  'Assigned': ['Assigned'],
+  'Assessment in Progress': ['Assessment in Progress'],
+  'Awaiting Review': ['Submitted to Manager', 'Under Manager Review'],
+  'Awaiting AC': ['Submitted to AC', 'Awaiting AC Approval'],
+  'Awaiting Account & Record': ['AC Approved', 'Sent to Account & Record', 'Registered'],
+  'Returned for Correction': ['Returned for Correction', 'AC Returned', 'AC Rejected'],
+  'Completed': ['Completed'],
+}
+const tabFor = (st) => Object.keys(STAGE_STATUSES).find((tab) => STAGE_STATUSES[tab].includes(st)) || 'Completed'
+
+// A stage bucket is shown only when the current user can act in it — a Valuation
+// Officer prepares/assesses/submits but never reviews, decides at AC, or does the
+// Account & Record steps, so those tabs stay out of their pipeline.
+const tabVisible = (t, f) => {
+  switch (t) {
+    case 'Assigned': return f.canCreate || f.canSubmit || f.canReview
+    case 'Assessment in Progress': return f.canSubmit || f.canEdit
+    case 'Awaiting Review': return f.canReview || f.canDecide || f.canForward
+    case 'Awaiting AC': return f.canDecide
+    case 'Awaiting Account & Record': return f.canProcess || f.canAccountReview
+    case 'Returned for Correction': return f.canSubmit || f.canEdit || f.canReview
+    default: return true // Completed — everyone's own history
+  }
+}
+
+const F = ({ label, required, children }) => (
+  <div>
+    <label className="block text-xs font-semibold text-slate-600 mb-1.5">{label}{required && <span className="text-red-500"> *</span>}</label>
+    {children}
+  </div>
+)
 
 function gps() {
   return new Promise((resolve, reject) => {
@@ -29,15 +65,25 @@ function toDataUri(file) {
   })
 }
 
-/** RETD formula: Value = Amount × Quantity × (1 − Depreciation%). */
-const rowValue = (r) => (Number(r.amount) || 0) * (Number(r.quantity) || 0) * (1 - (Number(r.depreciation_pct) || 0) / 100)
+/** A Property Description row. Amount and depreciation are derived, never typed. */
+const emptyRow = (level) => ({ description: '', level, area_sqft: '', tar: '', quantity: '1', building_age: '' })
+const emptyLandRow = () => emptyRow(LAND_LEVEL)
 
 export default function Valuations() {
-  const { can } = useAuth()
+  const { can, user } = useAuth()
   const [sp] = useSearchParams()
   const focusId = sp.get('focus') ? Number(sp.get('focus')) : null
   const focusTab = sp.get('status') ? tabFor(sp.get('status')) : null
-  const [tab, setTab] = useState(focusTab || 'Submitted')
+  const canCreate = can('valuation.create')
+  const canEdit = can('valuation.edit')
+  const canReview = can('valuation.review')
+  const canDecide = can('valuation.approve')
+  const canSubmit = can('valuation.submit')
+  const canProcess = can('valuation.property_registration')
+  const canForward = can('valuation.forward_ac')
+  const canAccountReview = can('valuation.account_review')
+  const visibleTabs = TABS.filter((t) => tabVisible(t, { canCreate, canEdit, canReview, canDecide, canSubmit, canProcess, canForward, canAccountReview }))
+  const [tab, setTab] = useState(focusTab && TABS.includes(focusTab) ? focusTab : (visibleTabs[0] || 'Assigned'))
   const [rows, setRows] = useState(null)
   const [err, setErr] = useState(null)
   const [notice, setNotice] = useState('')
@@ -54,13 +100,6 @@ export default function Valuations() {
   const navigate = useNavigate()
   const focusDone = useRef(false)
 
-  const canCreate = can('valuation.create')
-  const canEdit = can('valuation.edit')
-  const canReview = can('valuation.review')
-  const canDecide = can('valuation.approve')
-  const canSubmit = can('valuation.submit')
-  const canProcess = can('valuation.litas_processing')
-
   const load = () => api.get('/valuations', { params: { status: tab, per_page: 50 } })
     .then((r) => setRows(unwrap(r).data)).catch(setErr)
   useEffect(() => { setErr(null); load() }, [tab]) // eslint-disable-line
@@ -72,8 +111,20 @@ export default function Valuations() {
   useEffect(() => { if (pathV) { setErr(null); loadPV() } }, [pathV]) // eslint-disable-line
 
   useEffect(() => {
-    api.get('/users', { params: { per_page: 200 } })
-      .then((r) => setUsers(unwrap(r).data.data))
+    // Assignable lookup rather than /users, which is gated on staff.view and so
+    // returned nothing for the officers who actually do this work.
+    Promise.all([
+      api.get('/lookup/assignable', { params: { task_type: 'Account & Record Processing' } }),
+      api.get('/lookup/assignable', { params: { task_type: 'Enforcement Visit' } }),
+    ])
+      .then(([acct, enf]) => {
+        const seen = new Set()
+        setUsers([...unwrap(acct).data.data, ...unwrap(enf).data.data].filter((u) => {
+          if (seen.has(u.id)) return false
+          seen.add(u.id)
+          return true
+        }))
+      })
       .catch(() => {})
   }, [])
 
@@ -110,26 +161,32 @@ export default function Valuations() {
     } catch (ex) { setErr(ex) }
   }
 
-  // Valuation workflow verbs bound to the modal (submit/assign/review/decide/processing).
+  // Valuation workflow verbs bound to the modal (begin/submit/assign/review/decide/account-review/processing/complete).
   const runValuationAction = async (verb, payload = {}) => {
     const v = detail?.valuation
     if (!v) return
     setErr(null); setNotice('')
     try {
       const call = async () => {
+        if (verb === 'begin') return api.post(`/valuations/${v.id}/begin`)
         if (verb === 'submit') return api.post(`/valuations/${v.id}/submit`, payload)
         if (verb === 'assign') return api.post(`/valuations/${v.id}/assign`, payload)
-        if (verb === 'forward') return api.post(`/valuations/${v.id}/review`, { decision: 'forward_ac', remarks: payload.remarks })
+        if (verb === 'forward') return api.post(`/valuations/${v.id}/review`, { decision: 'confirm_ac', remarks: payload.remarks })
         if (verb === 'return') return api.post(`/valuations/${v.id}/review`, { decision: 'return', remarks: payload.remarks })
         if (verb === 'approve') return api.post(`/valuations/${v.id}/decide`, { decision: 'approve', remarks: payload.remarks })
         if (verb === 'reject') return api.post(`/valuations/${v.id}/decide`, { decision: 'reject', remarks: payload.remarks })
-        if (verb === 'processing') return api.post(`/valuations/${v.id}/processing`)
+        if (verb === 'decide-return') return api.post(`/valuations/${v.id}/decide`, { decision: 'return', remarks: payload.remarks })
+        if (verb === 'account-approve') return api.post(`/valuations/${v.id}/account-review`, { decision: 'approve', officer_id: payload.officer_id, remarks: payload.remarks })
+        if (verb === 'account-return') return api.post(`/valuations/${v.id}/account-review`, { decision: 'return', remarks: payload.remarks })
+        if (verb === 'processing') return api.post(`/valuations/${v.id}/processing`, payload)
+        if (verb === 'complete') return api.post(`/valuations/${v.id}/complete`)
       }
       await call()
       setNotice(`Valuation action «${verb}» applied.`)
       load()
       if (pathV) loadPV()
-      openDetail({ discovery: detail.discovery, valuation: v })
+      const r = await api.get(`/valuations/${v.id}`)
+      openDetail({ discovery: detail.discovery, valuation: unwrap(r).data })
     } catch (ex) { setErr(ex) }
   }
 
@@ -180,7 +237,7 @@ export default function Valuations() {
 
   return (
     <div className="space-y-4">
-      <PageTitle sub="Two-stage review — Valuation Manager recommends, Assistant Commissioner approves"
+      <PageTitle sub="Property Valuation Section"
         right={canCreate && (
           <Btn onClick={() => setShowForm(true)}>+ New Valuation</Btn>
         )}>
@@ -190,11 +247,11 @@ export default function Valuations() {
       <SuccessBox>{notice}</SuccessBox>
 
       <div className="flex flex-wrap items-center gap-2">
-        <button onClick={() => { setPathV((v) => !v); setTab(focusTab || 'Submitted') }}
+        <button onClick={() => { setPathV((v) => !v); setTab(focusTab || (visibleTabs[0] || 'Assigned')) }}
           className={`px-3 py-1.5 rounded-lg text-sm font-semibold ${pathV ? 'bg-emerald-600 text-white' : 'bg-white border hover:bg-slate-50'}`}>
-          Discovered Properties · Path V
+          Discovered Properties
         </button>
-        {TABS.map((t) => (
+        {visibleTabs.map((t) => (
           <button key={t} onClick={() => { setTab(t); setPathV(false) }}
             className={`px-3 py-1.5 rounded-lg text-sm ${tab === t && !pathV ? 'bg-blue-600 text-white' : 'bg-white border hover:bg-slate-50'}`}>
             {t}
@@ -205,7 +262,7 @@ export default function Valuations() {
       {pathV && (
         <div className="space-y-3">
           <div className="rounded-xl bg-emerald-50 border border-emerald-100 px-4 py-3 text-sm text-emerald-700">
-            Discoveries classified to <b>Path V</b> appear here automatically — the valuation is the same record the discovery links to (single source of truth), no manual recreation. Assign an officer on any classified property to route it onward.
+            Discoveries Property that require Valuation.
           </div>
           {!disc ? <Spinner label="Loading discovered properties…" /> : (
             <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
@@ -263,10 +320,23 @@ export default function Valuations() {
         ? <Card><p className="text-slate-400 text-sm">No valuations in this bucket.</p></Card> : (
         <div className="space-y-3">
           {rows.data.map((v) => {
-            const awaitingManager = (v.status === 'Submitted' || v.status === 'Manager Review') && canReview
-            const awaitingAC = v.status === 'AC Approval' && canDecide
-            const needsSubmit = (v.status === 'Draft' || v.status === 'Returned') && canSubmit
-            const canMarkProcess = v.status === 'Approved' && canProcess && !v.litas_processing_status
+            const st = v.status
+            // One owner per step: the officer actions belong to the officer the
+            // assessment is assigned to, so a manager (or a supervisor, who holds the
+            // officer permissions too) never sees conduct/edit options on a record
+            // that is somebody else's. Unassigned records stay open to any officer.
+            const owns = !v.valuation_officer_id || Number(v.valuation_officer_id) === Number(user?.id)
+            const officerStep = canSubmit && owns
+            const startsWork = st === 'Assigned' && officerStep
+            const awaitingManager = (st === 'Submitted to Manager' || st === 'Under Manager Review') && canReview
+            const awaitingAC = (st === 'Submitted to AC' || st === 'Awaiting AC Approval') && canDecide
+            const awaitingAccount = st === 'AC Approved' && can('valuation.account_review')
+            const needsSubmit = (st === 'Assigned' || st === 'Assessment in Progress' || st === 'Returned for Correction') && officerStep
+            const canReassign = (st === 'Assigned' || st === 'Returned for Correction' || st === 'AC Returned') && (can('valuation.review') || can('valuation.forward_ac') || can('valuation.approve'))
+            // A valuation that came from a discovery is processed on the discovery
+            // itself so the property bill record is written once, in one place.
+            const canMarkProcess = st === 'Sent to Account & Record' && canProcess && !v.discovery_id
+            const canFinish = st === 'Registered' && (can('valuation.complete') || can('valuation.account_review'))
             const busy = busyId === v.id
 
             let action = null
@@ -274,16 +344,26 @@ export default function Valuations() {
               const b = submitBox[v.id] || {}
               action = (
                 <>
+                  {startsWork && (
+                    <Btn tone="blue" disabled={busy || processId === v.id}
+                      onClick={async () => {
+                        setErr(null); setBusyId(v.id)
+                        try { await api.post(`/valuations/${v.id}/begin`); setNotice('Assessment in progress.'); load() }
+                        catch (ex) { setErr(ex) } finally { setBusyId(null) }
+                      }} className="w-full text-xs">
+                      {busy ? 'Starting…' : 'Start assessment →'}
+                    </Btn>
+                  )}
                   {canEdit && (
                     <Btn tone="white" className="w-full text-xs" onClick={() => setEditVal(v)}>
                       ✏️ Complete / edit valuation form
                     </Btn>
                   )}
                   <div className="text-[11px] text-slate-400 font-semibold uppercase tracking-wide">Or quick-submit:</div>
-                  <input placeholder="Assessed value (US$)" type="number" min="0" value={b.assessed_value || ''}
+                  <input placeholder="Assessed value (US$)" type="number" step="any" min="0" value={b.assessed_value || ''}
                     onChange={(e) => setSubmitBox({ ...submitBox, [v.id]: { ...b, assessed_value: e.target.value } })}
                     className="w-full px-2 py-1.5 border rounded-lg text-xs" />
-                  <input placeholder="Recommended annual tax (US$)" type="number" min="0" value={b.annual_tax || ''}
+                  <input placeholder="Recommended annual tax (US$)" type="number" step="any" min="0" value={b.annual_tax || ''}
                     onChange={(e) => setSubmitBox({ ...submitBox, [v.id]: { ...b, annual_tax: e.target.value } })}
                     className="w-full px-2 py-1.5 border rounded-lg text-xs" />
                   <input placeholder="Note to manager…" value={b.remarks || ''}
@@ -293,6 +373,11 @@ export default function Valuations() {
                     onClick={() => submitValuation(v)} className="w-full text-xs">
                     {busy ? 'Submitting…' : 'Submit for review →'}
                   </Btn>
+                  {canReassign && (
+                    <Btn tone="white" className="w-full text-xs" onClick={() => openDetail({ valuation: v })}>
+                      ↻ Assign / reassign officer
+                    </Btn>
+                  )}
                 </>
               )
             } else if (awaitingManager) {
@@ -302,8 +387,8 @@ export default function Valuations() {
                     onChange={(e) => setRemarks({ ...remarks, [v.id]: e.target.value })}
                     className="w-full px-2 py-1.5 border rounded-lg text-xs" />
                   <div className="flex gap-2">
-                    <Btn tone="blue" disabled={busy} onClick={() => act(v.id, 'review', 'forward_ac')}
-                      className="flex-1 text-xs">Recommend to AC →</Btn>
+                    <Btn tone="blue" disabled={busy} onClick={() => act(v.id, 'review', 'confirm_ac')}
+                      className="flex-1 text-xs">Confirm & submit to AC →</Btn>
                     <Btn tone="white" disabled={busy} onClick={() => act(v.id, 'review', 'return', remarks[v.id])}
                       className="flex-1 text-xs">Return</Btn>
                   </div>
@@ -320,14 +405,38 @@ export default function Valuations() {
                       className="flex-1 text-xs">Approve</Btn>
                     <Btn tone="danger" disabled={busy} onClick={() => act(v.id, 'decide', 'reject', remarks[v.id])}
                       className="flex-1 text-xs">Reject</Btn>
+                    <Btn tone="white" disabled={busy} onClick={() => act(v.id, 'decide', 'return', remarks[v.id])}
+                      className="flex-1 text-xs">Return</Btn>
                   </div>
                 </>
+              )
+            } else if (awaitingAccount) {
+              action = (
+                <Btn tone="white" className="w-full text-xs" onClick={() => openDetail({ valuation: v })}>
+                  Review & assign A&R officer
+                </Btn>
               )
             } else if (canMarkProcess) {
               action = (
                 <Btn tone="success" disabled={processId === v.id} onClick={() => markProcessed(v)}
                   className="w-full text-xs">
-                  {processId === v.id ? 'Confirming…' : 'Mark processed in LITAS'}
+                  {processId === v.id ? 'Confirming…' : 'Record processing result'}
+                </Btn>
+              )
+            } else if (canFinish) {
+              action = (
+                <Btn tone="success" disabled={busy} onClick={async () => {
+                  setErr(null); setBusyId(v.id)
+                  try { await api.post(`/valuations/${v.id}/complete`); setNotice('Valuation completed.'); load() }
+                  catch (ex) { setErr(ex) } finally { setBusyId(null) }
+                }} className="w-full text-xs">
+                  {busy ? 'Completing…' : 'Complete'}
+                </Btn>
+              )
+            } else if (canReassign) {
+              action = (
+                <Btn tone="white" className="w-full text-xs" onClick={() => openDetail({ valuation: v })}>
+                  ↻ Assign / reassign officer
                 </Btn>
               )
             }
@@ -338,8 +447,8 @@ export default function Valuations() {
                 <div className="flex flex-col md:flex-row justify-between items-start gap-4">
                   <div>
                     <div className="font-semibold">{v.valuation_reference}
-                      <span className="ml-2"><Badge tone={statusTone(v.status)}>{v.status}</Badge></span>
-                      {v.litas_processing_status && <span className="ml-2"><Badge tone="green">{v.litas_processing_status}</Badge></span>}
+                      <span className="ml-2"><Badge tone={valuationStatusInfo(v.status).tone}>{v.status}</Badge></span>
+                      {v.registration_status && <span className="ml-2"><Badge tone="green">{v.registration_status}</Badge></span>}
                     </div>
                     <div className="text-sm text-slate-500 mt-1">
                       {v.owner_name || '—'} · {v.property_address || '—'}
@@ -369,7 +478,7 @@ export default function Valuations() {
                       {v.gps_coordinate && <span>📍 {v.gps_coordinate}</span>}
                       {v.owner_contact && <span>📞 {v.owner_contact}</span>}
                       {v.descriptions?.length > 0 && <span>🏠 {v.descriptions.length} description row{v.descriptions.length > 1 ? 's' : ''}</span>}
-                      {v.photos_count != null && <span>📷 {v.photos_count} photo{v.photos_count === 1 ? '' : 's'}</span>}
+                      {v.evidence_photos?.length > 0 && <span>📷 {v.evidence_photos.length} photo{v.evidence_photos.length === 1 ? '' : 's'}</span>}
                     </div>
                     {(v.manager_remarks || v.ac_remarks) && (
                       <div className="text-xs text-slate-500 mt-2 pt-2 border-t border-slate-100">
@@ -389,7 +498,7 @@ export default function Valuations() {
       )}
 
       {showForm && canCreate && (
-        <ValuationForm onClose={() => setShowForm(false)} onSaved={() => { setShowForm(false); setTab('Draft'); setNotice('Valuation draft created.') }} />
+        <ValuationForm onClose={() => setShowForm(false)} onSaved={() => { setShowForm(false); setTab('Assigned'); setNotice('Valuation created and assigned for assessment.') }} />
       )}
       {editVal && canEdit && (
         <ValuationForm initial={editVal} onClose={() => setEditVal(null)}
@@ -427,10 +536,10 @@ function ValuationForm({ onClose, onSaved, initial }) {
     construction_year: initial.construction_year || '',
     condition: initial.condition || '',
     assessment_date: (initial.assessment_date || '').slice(0, 10),
-    declared_value: initial.declared_value ?? '',
-    applicable_tax_rate: initial.applicable_tax_rate ?? '',
-    reassessed_value: initial.reassessed_value ?? '',
-    other_amounts: initial.other_amounts ?? '',
+    declared_value: fmtNum(initial.declared_value),
+    applicable_tax_rate: fmtNum(initial.applicable_tax_rate),
+    reassessed_value: fmtNum(initial.reassessed_value),
+    other_amounts: fmtNum(initial.other_amounts),
     gps_coordinate: initial.gps_coordinate || '',
     gps_accuracy: initial.gps_accuracy ?? '',
     remarks: initial.remarks || '',
@@ -457,18 +566,26 @@ function ValuationForm({ onClose, onSaved, initial }) {
     gps_accuracy: '',
     remarks: '',
   })
-  const [desc, setDesc] = useState(initial?.descriptions?.length
-    ? initial.descriptions.map((r) => ({
-        description: r.description || '', level: r.level || 'Ground Floor', area_sqft: r.area_sqft ?? '',
-        tar: r.tar ?? '', quantity: r.quantity ?? '1', amount: r.amount ?? '',
-        building_age: r.building_age ?? '', depreciation_pct: r.depreciation_pct ?? '',
-      }))
-    : [
-        { description: '', level: 'Ground Floor', area_sqft: '', tar: '', quantity: '1', amount: '', building_age: '', depreciation_pct: '' },
-      ])
+  // Land is always present as the first row and is never removable. A valuation
+  // recorded before this rule existed opens with a blank Land row to complete.
+  const [desc, setDesc] = useState(() => {
+    const saved = (initial?.descriptions || []).map((r) => ({
+      description: r.description || '',
+      level: r.level || 'Ground Floor',
+      area_sqft: fmtNum(r.area_sqft),
+      tar: fmtNum(r.tar),
+      quantity: r.quantity ?? '1',
+      building_age: r.building_age ?? '',
+    }))
+    if (!saved.length) return [emptyLandRow()]
+    const land = saved.filter(isLandRow)
+    const rest = saved.filter((r) => !isLandRow(r))
+    return land.length ? [...land, ...rest] : [emptyLandRow(), ...rest]
+  })
   const [photo, setPhoto] = useState(null)
   const [photoName, setPhotoName] = useState('')
   const [err, setErr] = useState('')
+  const [savedMsg, setSavedMsg] = useState('')
   const [busy, setBusy] = useState(false)
   const [hits, setHits] = useState([])
   const [billId, setBillId] = useState(initial?.bill_id || null)
@@ -479,10 +596,14 @@ function ValuationForm({ onClose, onSaved, initial }) {
     const next = desc.map((r, idx) => (idx === i ? { ...r, [k]: e.target.value } : r))
     setDesc(next)
   }
-  const addRow = () => setDesc([...desc, { description: '', level: 'Other', area_sqft: '', tar: '', quantity: '1', amount: '', building_age: '', depreciation_pct: '' }])
-  const delRow = (i) => setDesc(desc.filter((_, idx) => idx !== i))
+  const addRow = () => setDesc([...desc, emptyRow('Other')])
+  // Land is mandatory: its row has no remove control and cannot be deleted.
+  const delRow = (i) => {
+    if (isLandRow(desc[i])) return
+    setDesc(desc.filter((_, idx) => idx !== i))
+  }
 
-  const totalValue = desc.reduce((s, r) => s + rowValue(r), 0)
+  const totalValue = totalAssessedValue(desc)
   const annualTaxPreview = Number(form.reassessed_value || 0) && Number(form.applicable_tax_rate || 0) > 0
     ? Number(form.reassessed_value) * Number(form.applicable_tax_rate) / 100
     : 0
@@ -539,18 +660,26 @@ function ValuationForm({ onClose, onSaved, initial }) {
 
   const submit = async (e) => {
     e.preventDefault()
-    setErr(''); setBusy(true)
+    setErr(''); setSavedMsg('')
+
+    // Negative or malformed inputs are refused here; the server refuses to submit
+    // an incomplete Land row or an unpriced building row.
+    const issues = descriptionInputIssues(desc)
+    if (issues.length) return setErr(issues[0])
+
+    setBusy(true)
     try {
-      const rows = desc.filter((r) => r.description || r.amount)
+      const rows = desc.filter((r) => isLandRow(r) || r.description || r.area_sqft || r.tar || r.building_age)
       const descriptionRows = rows.map((r) => ({
         description: r.description,
         level: r.level,
         area_sqft: r.area_sqft || undefined,
         tar: r.tar || undefined,
         quantity: r.quantity || undefined,
-        amount: r.amount || undefined,
+        // Read-only on the form; the server recomputes both from the inputs above.
+        amount: rowAmount(r) ?? undefined,
         building_age: r.building_age || undefined,
-        depreciation_pct: r.depreciation_pct || undefined,
+        depreciation_pct: rowDepreciationPct(r),
       }))
 
       let valuation
@@ -612,7 +741,9 @@ function ValuationForm({ onClose, onSaved, initial }) {
           gps_coordinate: form.gps_coordinate || undefined,
         })
       }
-      setNotice(isEdit
+      // Local confirmation: the parent's notice is raised by onSaved. setNotice here
+      // would be out of scope — ValuationForm is its own component.
+      setSavedMsg(isEdit
         ? `Valuation ${valuation.valuation_reference} saved.${photo ? ' Photo evidence attached.' : ''}`
         : `Valuation ${valuation.valuation_reference} drafted.${photo ? ' Photo evidence attached.' : ''}`)
       setTimeout(onSaved, 700)
@@ -623,13 +754,6 @@ function ValuationForm({ onClose, onSaved, initial }) {
     }
     setBusy(false)
   }
-
-  const F = ({ label, required, children }) => (
-    <div>
-      <label className="block text-xs font-semibold text-slate-600 mb-1.5">{label}{required && <span className="text-red-500"> *</span>}</label>
-      {children}
-    </div>
-  )
 
   return (
     <div className="fixed inset-0 z-50 bg-black/40 overflow-y-auto" onClick={onClose}>
@@ -645,6 +769,7 @@ function ValuationForm({ onClose, onSaved, initial }) {
 
           <div className="px-6 py-4 space-y-4 max-h-[70vh] overflow-y-auto">
             {err && <ErrorBox error={{ message: err }} />}
+            {savedMsg && <SuccessBox>{savedMsg}</SuccessBox>}
 
             <Card className="!p-0 shadow-none border border-slate-100">
               <div className="text-xs font-semibold text-slate-500 px-4 pt-4 uppercase tracking-wider">Assessment</div>
@@ -701,10 +826,10 @@ function ValuationForm({ onClose, onSaved, initial }) {
                 <F label="Condition"><Input className="w-full" value={form.condition} onChange={set('condition')} /></F>
                 <F label="Owner contact"><Input className="w-full" value={form.owner_contact} onChange={set('owner_contact')} placeholder="Phone / email" /></F>
                 <F label="Assessment date"><Input className="w-full" type="date" value={form.assessment_date} onChange={set('assessment_date')} /></F>
-                <F label="Declared value (US$)"><Input className="w-full" type="number" min="0" value={form.declared_value} onChange={set('declared_value')} /></F>
-                <F label="Reassessed value (US$)"><Input className="w-full" type="number" min="0" value={form.reassessed_value} onChange={set('reassessed_value')} /></F>
-                <F label="Applicable tax rate (%)"><Input className="w-full" type="number" min="0" value={form.applicable_tax_rate} onChange={set('applicable_tax_rate')} /></F>
-                <F label="Other amounts (US$)"><Input className="w-full" type="number" min="0" value={form.other_amounts} onChange={set('other_amounts')} /></F>
+                <F label="Declared value (US$)"><Input className="w-full" type="number" step="any" min="0" value={form.declared_value} onChange={set('declared_value')} /></F>
+                <F label="Reassessed value (US$)"><Input className="w-full" type="number" step="any" min="0" value={form.reassessed_value} onChange={set('reassessed_value')} /></F>
+                <F label="Applicable tax rate (%)"><Input className="w-full" type="number" step="any" min="0" value={form.applicable_tax_rate} onChange={set('applicable_tax_rate')} placeholder="e.g. 1.5, 0.025, 3.5" /></F>
+                <F label="Other amounts (US$)"><Input className="w-full" type="number" step="any" min="0" value={form.other_amounts} onChange={set('other_amounts')} /></F>
                 <F label="GPS coordinate">
                   <div className="flex gap-2">
                     <Input className="flex-1" value={form.gps_coordinate} onChange={set('gps_coordinate')} placeholder="lat,lng" />
@@ -731,53 +856,71 @@ function ValuationForm({ onClose, onSaved, initial }) {
               <div className="flex items-center justify-between px-4 pt-4">
                 <div>
                   <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Property descriptions</div>
-                  <div className="text-[11px] text-slate-400 mt-0.5">Row value = Amount × Quantity × (1 − Depreciation%)</div>
+                  <div className="text-[11px] text-slate-400 mt-0.5">
+                    Land: market value per lot × lots. Building: Area × TAR rate × Quantity. Depreciation = Building age × 2% (Land 0%).
+                    Row assessed value = Amount × (1 − Depreciation%).
+                  </div>
                 </div>
                 <Btn type="button" tone="white" onClick={addRow} className="text-xs px-3 py-1.5">+ Add row</Btn>
               </div>
               <div className="p-4 space-y-3">
-                {desc.map((r, i) => (
-                  <div key={i} className="border border-slate-200 rounded-xl p-3 grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
-                    <div className="col-span-2">
-                      <F label={`Description · row ${i + 1}`}><Input className="w-full" value={r.description} onChange={setRow(i)('description')} placeholder="e.g. 3-bedroom house" /></F>
-                    </div>
-                    <div>
-                      <F label="Level"><select className="w-full px-2 py-2 border border-slate-300 rounded-xl text-sm bg-white" value={r.level} onChange={setRow(i)('level')}>
-                        {['Ground Floor', '1st Floor', '2nd Floor', '3rd Floor', 'Basement', 'Exterior', 'Other'].map((l) => <option key={l}>{l}</option>)}
-                      </select></F>
-                    </div>
-                    <div>
-                      <F label="Area (sq ft)"><Input className="w-full" type="number" min="0" value={r.area_sqft} onChange={setRow(i)('area_sqft')} /></F>
-                    </div>
-                    <div>
-                      <F label="TAR rate (%)"><Input className="w-full" type="number" min="0" value={r.tar} onChange={setRow(i)('tar')} /></F>
-                    </div>
-                    <div>
-                      <F label="Quantity"><Input className="w-full" type="number" min="1" value={r.quantity} onChange={setRow(i)('quantity')} /></F>
-                    </div>
-                    <div>
-                      <F label="Amount (US$)" required><Input className="w-full" type="number" min="0" value={r.amount} onChange={setRow(i)('amount')} /></F>
-                    </div>
-                    <div>
-                      <F label="Building age (yrs)"><Input className="w-full" type="number" min="0" value={r.building_age} onChange={setRow(i)('building_age')} /></F>
-                    </div>
-                    <div>
-                      <F label="Depreciation (%)"><Input className="w-full" type="number" min="0" max="100" value={r.depreciation_pct} onChange={setRow(i)('depreciation_pct')} /></F>
-                    </div>
-                    <div className="col-span-2 md:col-span-3 flex items-end gap-2">
-                      <span className="text-[11px] text-slate-400">Row value</span>
-                      <span className="font-bold text-navy-800">{fmtMoney(rowValue(r))}</span>
-                    </div>
-                    {desc.length > 1 && (
-                      <div className="flex justify-end">
-                        <button type="button" onClick={() => delRow(i)} className="text-red-500 hover:text-red-700 text-[11px] font-semibold px-2 py-1.5 border border-red-200 rounded-lg">Remove</button>
+                {desc.map((r, i) => {
+                  const land = isLandRow(r)
+                  const amount = rowAmount(r)
+                  const depreciation = rowDepreciationPct(r)
+                  const assessed = rowValue(r)
+                  return (
+                    <div key={i} className="border border-slate-200 rounded-xl p-3 grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                      <div className="col-span-2">
+                        <F label={land ? 'Description · row 1 (Land — mandatory)' : `Description · row ${i + 1}`}><Input className="w-full" value={r.description} onChange={setRow(i)('description')} placeholder={land ? 'e.g. parcel on Johnsonville Road' : 'e.g. 3-bedroom house'} /></F>
                       </div>
-                    )}
-                  </div>
-                ))}
+                      <div>
+                        <F label="Level"><select className="w-full px-2 py-2 border border-slate-300 rounded-xl text-sm bg-white disabled:bg-slate-50 disabled:text-slate-500" value={r.level} onChange={setRow(i)('level')} disabled={land}>
+                          {['Land','Ground Floor', '1st Floor', '2nd Floor', '3rd Floor', 'Basement', 'Exterior', 'Other'].map((l) => <option key={l}>{l}</option>)}
+                        </select></F>
+                      </div>
+                      {!land && (
+                        <div>
+                          <F label="Area (sq ft)" required><Input className="w-full" type="number" step="any" min="0" value={r.area_sqft} onChange={setRow(i)('area_sqft')} /></F>
+                        </div>
+                      )}
+                      <div>
+                        <F label={land ? 'Market value / lot (US$)' : 'TAR rate (US$)'} required><Input className="w-full" type="number" step="any" min="0" value={r.tar} onChange={setRow(i)('tar')} placeholder={land ? 'e.g. 5000' : 'e.g. 1.5, 0.025'} /></F>
+                      </div>
+                      <div>
+                        <F label={land ? 'Lots (#)' : 'Quantity (#)'} required><Input className="w-full" type="number" step="1" min="1" value={r.quantity} onChange={setRow(i)('quantity')} /></F>
+                      </div>
+                      <div>
+                        <F label="Amount (US$)">
+                          <div className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-slate-700 tabular-nums">{amount === null ? '—' : fmtMoney(amount)}</div>
+                        </F>
+                      </div>
+                      {!land && (
+                        <div>
+                          <F label="Building age (yrs)"><Input className="w-full" type="number" step="1" min="0" value={r.building_age} onChange={setRow(i)('building_age')} /></F>
+                        </div>
+                      )}
+                      <div>
+                        <F label="Depreciation (%)">
+                          <div className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-slate-700 tabular-nums">{land ? '0.00' : depreciation.toFixed(2)}</div>
+                        </F>
+                      </div>
+                      <div className="col-span-2 md:col-span-3 flex items-end gap-2">
+                        <span className="text-[11px] text-slate-400">Row assessed value</span>
+                        <span className="font-bold text-navy-800">{assessed === null ? '—' : fmtMoney(assessed)}</span>
+                      </div>
+                      <div className="flex justify-end">
+                        {land
+                          ? <span className="text-[11px] text-slate-400 px-2 py-1.5">Mandatory</span>
+                          : <button type="button" onClick={() => delRow(i)} className="text-red-500 hover:text-red-700 text-[11px] font-semibold px-2 py-1.5 border border-red-200 rounded-lg">Remove</button>}
+                      </div>
+                    </div>
+                  )
+                })}
 
-                <div className="flex flex-wrap gap-x-8 gap-y-1 bg-slate-50 border border-slate-100 rounded-xl px-4 py-3 text-sm">
-                  <span>Sub-total property value <span className="font-bold text-navy-800">{fmtMoney(totalValue)}</span></span>
+                <div className="flex flex-wrap items-baseline gap-x-8 gap-y-1 bg-slate-50 border border-slate-100 rounded-xl px-4 py-3 text-sm">
+                  <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">Total assessed value</span>
+                  <span className="text-lg font-bold text-navy-800 tabular-nums">{fmtMoney(totalValue)}</span>
                   {Number(form.reassessed_value) > 0 && (
                     <span>Reassessed {fmtMoney(form.reassessed_value)} @ {form.applicable_tax_rate || 0}% <span className="font-bold text-navy-800">{fmtMoney(annualTaxPreview)}</span></span>
                   )}

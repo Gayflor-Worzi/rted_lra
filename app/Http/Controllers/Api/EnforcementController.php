@@ -2,18 +2,27 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Exceptions\ReceiptConflictException;
 use App\Http\Controllers\Controller;
 use App\Models\EnforcementVisit;
 use App\Models\EvidencePhoto;
 use App\Models\PaymentVerification;
 use App\Models\PropertyBill;
 use App\Models\PropertyDiscovery;
+use App\Models\ReceiptFingerprint;
 use App\Models\Task;
+use App\Models\User;
 use App\Services\AuditService;
+use App\Services\ReceiptDuplicationService;
+use App\Services\SectionWorkspaceService;
 use App\Services\SyncService;
 use App\Services\TaskService;
 use App\Services\TaskWorkflowService;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 
@@ -28,6 +37,7 @@ class EnforcementController extends Controller
         private readonly AuditService $audit,
         private readonly TaskWorkflowService $workflow,
         private readonly SyncService $sync,
+        private readonly ReceiptDuplicationService $duplicates,
     ) {}
 
     /**
@@ -37,14 +47,41 @@ class EnforcementController extends Controller
     {
         $user = $request->user();
         abort_unless($user->canPermission('tasks.view_own'), 403, 'Missing permission: tasks.view_own');
+        $statusGroup = $request->query('status_group', 'active');
+        abort_unless(
+            in_array($statusGroup, ['all', 'active', 'pending', 'overdue', 'escalated', 'completed'], true),
+            422,
+            'Unknown task status group.'
+        );
 
+        // Enforcement workspace isolation: the field queue only ever carries
+        // enforcement task types — account/valuation/AC desk work is processed
+        // inside its own section workspace (§23 / §24).
         $query = Task::where('assigned_to', $user->id)
+            ->whereIn('task_type', SectionWorkspaceService::types(SectionWorkspaceService::ENFORCEMENT))
             ->with('assignedTo:id,full_name')
             ->with('assignedBy:id,full_name')
             ->withCount('engagements')
-            ->whereNotIn('status', ['Resolved', 'Closed', 'Paid'])
             ->orderByRaw("CASE tasks.status WHEN 'Escalated' THEN 1 WHEN '30-Day Warning' THEN 2 WHEN '72-Hour Warning' THEN 3 WHEN 'Assigned' THEN 4 WHEN 'Out for Delivery' THEN 5 ELSE 6 END DESC")
             ->orderByDesc('id');
+
+        switch ($statusGroup) {
+            case 'active':
+                $query->whereNotIn('status', Task::COMPLETED_STATUSES);
+                break;
+            case 'pending':
+                $query->whereNotIn('status', [...Task::COMPLETED_STATUSES, 'Escalated']);
+                break;
+            case 'overdue':
+                $query->whereNotIn('status', Task::COMPLETED_STATUSES)->overdue();
+                break;
+            case 'escalated':
+                $query->where('status', 'Escalated');
+                break;
+            case 'completed':
+                $query->whereIn('status', Task::COMPLETED_STATUSES);
+                break;
+        }
 
         $rows = $query->paginate($request->query('per_page', 50))->withQueryString();
 
@@ -86,6 +123,7 @@ class EnforcementController extends Controller
                 'last_sync_at' => $task->last_sync_at?->toISOString(),
                 'priority' => $task->priority,
                 'due_date' => $task->due_date?->toDateString(),
+                'deadline_status' => $task->presentDeadline(),
                 'reference_type' => $task->reference_type,
                 'reference_id' => $task->reference_id,
                 'property_bill_id' => $bill?->id,
@@ -164,39 +202,57 @@ class EnforcementController extends Controller
             'local_transaction_id' => 'nullable|string|max:80',
         ]);
 
+        $completing = $data['action'] !== 'escalate';
+        if ($completing && $task->task_type === Task::TYPE_BILL_DELIVERY) {
+            $latestDeliveryOutcome = EnforcementVisit::query()
+                ->where('task_id', $task->id)
+                ->orderByDesc('id')
+                ->value('delivery_status');
+            abort_unless(
+                $latestDeliveryOutcome === EnforcementVisit::DELIVERY_DELIVERED,
+                422,
+                'A bill delivery task can only be completed after a visit records a Delivered outcome.'
+            );
+        }
+
         try {
-            if ($data['action'] === 'escalate') {
-                $history = $task->transitionTo('Escalated', 'escalate', $user, $data['notes'] ?? null);
-            } else {
-                $history = $task->transitionTo('Delivered', 'complete', $user, $data['notes'] ?? null);
-            }
+            $payload = DB::transaction(function () use ($data, $task, $user, $syncId, $completing) {
+                $wasDelivered = $task->status === 'Delivered';
+                if ($data['action'] === 'escalate') {
+                    $task->transitionTo('Escalated', 'escalate', $user, $data['notes'] ?? null);
+                } elseif (! $wasDelivered) {
+                    $task->transitionTo('Delivered', 'complete', $user, $data['notes'] ?? null);
+                }
+
+                if ($completing && ! $wasDelivered) {
+                    $task->recordEngagement('bill_delivered', 'delivered', $data['notes'] ?? 'Assignment completed — bill handed over.', $user, isset($data['visit_date']) ? Carbon::parse($data['visit_date']) : now());
+                } elseif (! $completing) {
+                    $task->recordEngagement('follow_up', 'escalated', $data['notes'] ?? 'Assignment escalated by the assigned officer.', $user);
+                }
+
+                // Sync bill case status with the task when present.
+                if ($task->reference_type === 'property_bill') {
+                    $bill = PropertyBill::find($task->reference_id);
+                    if ($bill) {
+                        $bill->case_status = $completing ? 'Delivered' : 'Escalated';
+                        $bill->save();
+                    }
+                }
+
+                $payload = ['task_id' => $task->id, 'task_reference' => $task->task_reference, 'status' => $task->status];
+                if ($syncId) {
+                    $this->sync->record($user->id, $syncId, 'action', (int) $task->id, $payload);
+                }
+
+                return $payload;
+            });
         } catch (\InvalidArgumentException $e) {
             return response()->json(['message' => $e->getMessage()], 422);
         }
 
-        if ($data['action'] === 'complete') {
-            $task->recordEngagement('bill_delivered', 'delivered', $data['notes'] ?? 'Assignment completed — bill handed over.', $user, isset($data['visit_date']) ? \Illuminate\Support\Carbon::parse($data['visit_date']) : now());
-        } else {
-            $task->recordEngagement('follow_up', 'escalated', $data['notes'] ?? 'Assignment escalated by the assigned officer.', $user);
-        }
-
-        // Sync bill case status with the task when present.
-        if ($task->reference_type === 'property_bill') {
-            $bill = PropertyBill::find($task->reference_id);
-            if ($bill) {
-                $bill->case_status = $data['action'] === 'escalate' ? 'Escalated' : 'Delivered';
-                $bill->save();
-            }
-        }
-
-        $payload = ['task_id' => $task->id, 'task_reference' => $task->task_reference, 'status' => $task->status];
-        if ($syncId) {
-            $this->sync->record($user->id, $syncId, 'action', (int) $task->id, $payload);
-        }
-
         return response()->json([
             'data' => $payload,
-            'message' => $data['action'] === 'escalate' ? 'Assignment escalated.' : 'Assignment completed.',
+            'message' => $completing ? 'Assignment completed.' : 'Assignment escalated.',
         ]);
     }
 
@@ -220,8 +276,14 @@ class EnforcementController extends Controller
             'bill_id' => 'nullable|integer|exists:property_bills,id',
             'status' => 'required|string|max:60',
             'visit_status' => 'nullable|string|max:60',
-            'bill_delivery_status' => 'nullable|string|max:60',
-            'delivery_status' => 'nullable|string|max:60',
+            'bill_delivery_status' => ['nullable', 'string', Rule::in([
+                ...EnforcementVisit::DELIVERY_STATUSES,
+                'Returned to Office',
+            ])],
+            'delivery_status' => ['nullable', 'string', Rule::in([
+                ...EnforcementVisit::DELIVERY_STATUSES,
+                'Returned to Office',
+            ])],
             'notes' => 'nullable|string|max:2000',
             'remarks' => 'nullable|string|max:2000',
             'gps_lat' => 'nullable|numeric',
@@ -246,171 +308,271 @@ class EnforcementController extends Controller
             'local_transaction_id' => 'nullable|string|max:80',
         ]);
 
+        abort_if(
+            ! empty($data['delivery_status'])
+                && ! empty($data['bill_delivery_status'])
+                && $data['delivery_status'] !== $data['bill_delivery_status'],
+            422,
+            'Delivery status fields must agree.'
+        );
+        $deliveryStatus = $data['delivery_status'] ?? $data['bill_delivery_status'] ?? null;
+        if ($deliveryStatus === 'Returned to Office') {
+            $deliveryStatus = EnforcementVisit::DELIVERY_RETURNED;
+        }
+
         $taskId = $data['assignment_id'] ?? $data['task_id'] ?? null;
         $billId = $data['property_bill_id'] ?? $data['bill_id'] ?? null;
 
-        $bill = $billId ? PropertyBill::find($billId) : ($taskId ? Task::find($taskId)?->reference_type === 'property_bill' ? PropertyBill::find(Task::find($taskId)->reference_id) : null : null);
+        $task = $taskId ? Task::with('assignedTo')->find($taskId) : null;
+        $bill = $billId ? PropertyBill::with('tasks.assignedTo')->find($billId) : null;
 
-        if (! $bill && ! $billId) {
+        // Resolve bill from task if bill_id not provided but task references a bill.
+        if (! $bill && $task && $task->reference_type === 'property_bill') {
+            $bill = PropertyBill::find($task->reference_id);
+        }
+
+        if (! $bill && ! $task) {
+            abort(422, 'Either a task or a bill must be provided to record a visit.');
+        }
+
+        // ---- AUTHORIZATION: user must be scoped to the task or bill ----
+        // Determine the "effective bill" the user is authorized to visit.
+        $effectiveBill = null;
+        $effectiveTask = null;
+
+        if ($task) {
+            // User must be assigned to this task or have supervisory scope.
+            $taskAuthorized = $task->assigned_to === $user->id
+                || $user->isSystemAdministrator();
+
+            if (! $taskAuthorized) {
+                abort_unless(false, 403, 'You can only record visits for tasks assigned to you.');
+            }
+
+            // The bill referenced by the task must match any bill_id provided.
+            if ($billId && $task->reference_type === 'property_bill' && $task->reference_id != $billId) {
+                abort_unless(false, 422, 'Visit bill does not match the task record.');
+            }
+
+            $effectiveTask = $task;
+            $effectiveBill = $bill ?? PropertyBill::find($task->reference_id);
+        } elseif ($bill) {
+            // User must have a task assigned to this bill, or be system admin.
+            $billHasTask = Task::where('reference_type', 'property_bill')
+                ->where('reference_id', $bill->id)
+                ->where('assigned_to', $user->id)
+                ->exists();
+
+            if (! $billHasTask && ! $user->isSystemAdministrator()) {
+                abort_unless(false, 403, 'You can only record visits for bills assigned to you.');
+            }
+
+            $effectiveBill = $bill;
+        } else {
+            // Neither task nor bill provides scope — deny by default.
+            abort(403, 'You can only record visits for work assigned to you.');
+        }
+
+        // Ensure we have a valid bill after authorization.
+        if (! $effectiveBill) {
             abort(422, 'A bill is required to record a visit.');
         }
+
+        $task = $effectiveTask;
 
         $gps = $data['gps_coordinate'] ?? (isset($data['gps_lat'], $data['gps_lng'])
             ? trim($data['gps_lat'].','.$data['gps_lng'])
             : null);
 
-        $visit = EnforcementVisit::create([
-            'task_id' => $taskId,
-            'bill_id' => $bill?->id ?? $billId,
-            'document_number' => $bill?->document_number,
-            'property_id' => $bill?->property_id,
-            'officer_id' => $user->id,
-            'visit_date' => now()->toDateString(),
-            'visit_status' => $data['visit_status'] ?? $data['status'],
-            'delivery_status' => $data['delivery_status'] ?? $data['bill_delivery_status'] ?? null,
-            'recipient_name' => $data['recipient_name'] ?? null,
-            'recipient_contact' => $data['recipient_contact'] ?? null,
-            'gps_coordinate' => $gps,
-            'gps_accuracy' => $data['gps_accuracy'] ?? null,
-            'gps_captured_at' => $data['gps_captured_at'] ?? now(),
-            'visit_photo' => $data['visit_photo'] ?? $data['proof_photo'] ?? null,
-            'remarks' => $data['remarks'] ?? $data['notes'] ?? null,
-            'snapshot_outstanding' => $bill?->outstanding_balance,
-            'snapshot_payment_status' => $bill?->payment_status,
-            'snapshot_case_status' => $bill?->case_status,
-        ]);
+        // Evidence photo: decode base64 data URIs to a stored file FIRST so the
+        // huge base64 string never touches the (VARCHAR) visit_photo column —
+        // only the small file path is persisted. A device/reference path is kept
+        // verbatim as capture evidence.
+        $proofSource = $data['visit_photo'] ?? $data['proof_photo'] ?? null;
+        $storedPhoto = null;
+        $photoMime = null;
+        $photoSize = null;
+        if ($proofSource) {
+            [$storedPhoto, $photoMime, $photoSize] = $this->storePhotoBytes($proofSource);
+            // storePhotoBytes returns the raw input verbatim when it was not a
+            // decodable base64 capture (decode failure). Do not leak that into
+            // the DB column — evidence is then path-only.
+            if ($storedPhoto && str_contains($storedPhoto, 'base64,')) {
+                $storedPhoto = null;
+            }
+        }
 
-        // Evidence photo registry entry when a capture was supplied.
-        if ($data['visit_photo'] ?? $data['proof_photo'] ?? null) {
-            EvidencePhoto::create([
-                'photo_type' => $data['photo_type'] ?? 'PROPERTY_FULL_VIEW',
+        $visitPayload = DB::transaction(function () use ($data, $user, $syncId, $task, $bill, $billId, $taskId, $storedPhoto, $photoMime, $photoSize, $gps, $deliveryStatus) {
+            $visit = EnforcementVisit::create([
+                'task_id' => $task?->id ?? $taskId,
                 'bill_id' => $bill?->id ?? $billId,
-                'task_id' => $taskId,
-                'visit_id' => $visit->id,
+                'document_number' => $bill?->document_number,
                 'property_id' => $bill?->property_id,
                 'officer_id' => $user->id,
-                'file_path' => $data['visit_photo'] ?? $data['proof_photo'],
+                'visit_date' => now()->toDateString(),
+                'visit_status' => $data['visit_status'] ?? $data['status'],
+                'delivery_status' => $deliveryStatus,
+                'recipient_name' => $data['recipient_name'] ?? null,
+                'recipient_contact' => $data['recipient_contact'] ?? null,
                 'gps_coordinate' => $gps,
-                'captured_at' => $data['gps_captured_at'] ?? now(),
-                'remarks' => 'Captured at visit '.$visit->visit_reference.'.',
+                'gps_accuracy' => $data['gps_accuracy'] ?? null,
+                'gps_captured_at' => $data['gps_captured_at'] ?? now(),
+                'visit_photo' => $storedPhoto,
+                'remarks' => $data['remarks'] ?? $data['notes'] ?? null,
+                'snapshot_outstanding' => $bill?->outstanding_balance,
+                'snapshot_payment_status' => $bill?->payment_status,
+                'snapshot_case_status' => $bill?->case_status,
             ]);
-        }
 
-        $this->audit->record($visit, 'enforcement.visit_recorded', $user->id, [], [
-            'visit_reference' => $visit->visit_reference,
-            'bill_id' => $visit->bill_id,
-            'gps_accuracy' => $visit->gps_accuracy,
-        ]);
-
-        // Advance task + bill where possible.
-        if ($taskId) {
-            $task = Task::find($taskId);
-            $handedOver = in_array(strtolower((string) ($data['delivery_status'] ?? $data['bill_delivery_status'] ?? '')), ['delivered', 'completed', 'handed over', 'received'], true);
-
-            if ($task && $task->status === 'Assigned') {
-                try {
-                    $task->transitionTo('Out for Delivery', 'visit', $user, 'Field visit recorded.');
-                } catch (\InvalidArgumentException $e) {
-                    // Non-blocking — visit is still persisted.
-                }
+            if ($storedPhoto) {
+                EvidencePhoto::create([
+                    'photo_type' => $data['photo_type'] ?? 'PROPERTY_FULL_VIEW',
+                    'bill_id' => $bill?->id ?? $billId,
+                    'task_id' => $taskId,
+                    'visit_id' => $visit->id,
+                    'property_id' => $bill?->property_id,
+                    'officer_id' => $user->id,
+                    'file_path' => $storedPhoto,
+                    'mime' => $photoMime,
+                    'size_bytes' => $photoSize,
+                    'gps_coordinate' => $gps,
+                    'captured_at' => $data['gps_captured_at'] ?? now(),
+                    'remarks' => 'Captured at visit '.$visit->visit_reference.'.',
+                ]);
             }
 
-            // A handed-over delivery completes the delivery stage.
-            if ($task && $handedOver && $task->status === 'Out for Delivery') {
-                try {
-                    $task->transitionTo('Delivered', 'delivered', $user, 'Bill handed over during field visit.');
-                } catch (\InvalidArgumentException $e) {
-                    // Non-blocking — visit is still persisted.
-                }
-            }
+            $this->audit->record($visit, 'enforcement.visit_recorded', $user->id, [], [
+                'visit_reference' => $visit->visit_reference,
+                'bill_id' => $visit->bill_id,
+                'gps_accuracy' => $visit->gps_accuracy,
+            ]);
 
+            // Advance task + bill where possible.
             if ($task) {
-                $outcome = $handedOver ? 'delivered' : $this->visitOutcome((string) ($data['visit_status'] ?? $data['status'] ?? ''));
-                $task->recordEngagement(
-                    $handedOver ? 'bill_delivered' : 'delivery_attempt',
-                    $outcome,
-                    ($data['remarks'] ?? $data['notes'] ?? null),
-                    $user,
-                    now(),
-                    array_filter(['gps' => $gps, 'recipient' => $data['recipient_name'] ?? null, 'visit' => $visit->visit_reference]),
-                );
-            }
-        }
+                $handedOver = $deliveryStatus === EnforcementVisit::DELIVERY_DELIVERED;
 
-        if ($bill) {
-            $handedOver = in_array(strtolower((string) ($data['delivery_status'] ?? $data['bill_delivery_status'] ?? '')), ['delivered', 'completed', 'handed over', 'received'], true);
-
-            if ($bill->case_status === 'Logged' || $bill->case_status === 'Awaiting Assignment' || $bill->case_status === 'Assigned') {
-                $bill->case_status = $handedOver ? 'Delivered' : 'Out for Delivery';
-            }
-            if ($bill->delivery_status === 'Logged' || ($handedOver && $bill->delivery_status === 'Out for Delivery')) {
-                $bill->delivery_status = $handedOver ? 'Delivered' : 'Out for Delivery';
-            }
-            $bill->save();
-
-            // Stamp the formal delivery/notice trail when the officer reports a hand-over.
-            if ($handedOver) {
-                if (! $bill->delivery_date) {
-                    $bill->delivery_date = now()->toDateString();
-                    $bill->save();
-                }
-            }
-        }
-
-        // Optional on-the-spot payment claim (receipt from the field).
-        if ($bill && ! empty($data['claim_receipt_number']) && $data['claim_amount'] !== null) {
-            $verification = PaymentVerification::create([
-                'bill_id' => $bill->id,
-                'property_id' => $data['claim_property_id'] ?? $bill->property_id,
-                'tin' => $data['claim_tin'] ?? $bill->tin,
-                'tax_due_date' => $data['claim_tax_due_date'] ?? null,
-                'document_number' => $bill->document_number,
-                'receipt_number' => $data['claim_receipt_number'],
-                'receipt_bill_number' => $bill->document_number,
-                'amount_claimed' => $data['claim_amount'],
-                'payment_period' => null,
-                'receipt_attachment' => $data['claim_receipt_photo'] ?? $data['visit_photo'] ?? null,
-                'match_status' => PaymentVerification::MATCH_PENDING,
-                'verification_status' => PaymentVerification::STATUS_PENDING,
-            ]);
-
-            $bill->case_status = 'Under Verification';
-            $bill->payment_status = 'Payment Claimed';
-            $bill->save();
-
-            if ($taskId) {
-                $task = Task::find($taskId);
-                if ($task && in_array($task->status, ['Assigned', 'Out for Delivery', 'Delivered'], true)) {
+                if ($task && $task->status === 'Assigned') {
                     try {
-                        $task->transitionTo('Payment Claimed', 'payment_claim', $user, 'Claimed on the spot during field visit.');
+                        $task->transitionTo('Out for Delivery', 'visit', $user, 'Field visit recorded.');
                     } catch (\InvalidArgumentException $e) {
-                        // non-blocking
+                        // Non-blocking — visit is still persisted.
                     }
                 }
+
+                // A handed-over delivery completes the delivery stage.
+                if ($task && $handedOver && $task->status === 'Out for Delivery') {
+                    try {
+                        $task->transitionTo('Delivered', 'delivered', $user, 'Bill handed over during field visit.');
+                    } catch (\InvalidArgumentException $e) {
+                        // Non-blocking — visit is still persisted.
+                    }
+                }
+
                 if ($task) {
-                    $task->recordEngagement('payment_claim', 'claim_submitted', "On-the-spot claim for bill {$bill->document_number} awaiting verification.", $user, now());
+                    $outcome = $handedOver ? 'delivered' : $this->visitOutcome((string) ($data['visit_status'] ?? $data['status'] ?? ''));
+                    $task->recordEngagement(
+                        $handedOver ? 'bill_delivered' : 'delivery_attempt',
+                        $outcome,
+                        ($data['remarks'] ?? $data['notes'] ?? null),
+                        $user,
+                        now(),
+                        array_filter(['gps' => $gps, 'recipient' => $data['recipient_name'] ?? null, 'visit' => $visit->visit_reference]),
+                    );
                 }
             }
 
-            $this->tasks->notifySection('ACCT', 'Payment claim', "On-the-spot claim for bill {$bill->document_number} awaiting verification.", 'payments');
-            $this->audit->record($bill, 'payments.claimed_onspot', $user->id, [], ['verification_id' => $verification->id]);
-        }
+            if ($bill) {
+                $handedOver = $deliveryStatus === EnforcementVisit::DELIVERY_DELIVERED;
 
-        $this->audit->record($visit, 'enforcement.visit_complete', $user->id, [], ['task_id' => $visit->task_id]);
+                if ($bill->case_status === 'Logged' || $bill->case_status === 'Awaiting Assignment' || $bill->case_status === 'Assigned') {
+                    $bill->case_status = $handedOver ? 'Delivered' : 'Out for Delivery';
+                }
+                if ($deliveryStatus !== null && in_array($bill->delivery_status, ['Logged', 'Out for Delivery'], true)) {
+                    $bill->delivery_status = $deliveryStatus;
+                } elseif ($bill->delivery_status === 'Logged') {
+                    $bill->delivery_status = EnforcementVisit::DELIVERY_OUT_FOR_DELIVERY;
+                }
+                $bill->save();
 
-        $payload = [
-            'id' => $visit->id,
-            'visit_reference' => $visit->visit_reference,
-            'task_id' => $visit->task_id,
-            'bill_id' => $visit->bill_id,
-            'gps_accuracy' => $visit->gps_accuracy,
-        ];
-        if ($syncId) {
-            $this->sync->record($user->id, $syncId, 'visit', (int) $visit->id, $payload);
-        }
+                // Stamp the formal delivery/notice trail when the officer reports a hand-over.
+                if ($handedOver) {
+                    if (! $bill->delivery_date) {
+                        $bill->delivery_date = now()->toDateString();
+                        $bill->save();
+                    }
+                }
+            }
+
+            // Optional on-the-spot payment claim (receipt from the field).
+            if ($bill && ! empty($data['claim_receipt_number']) && $data['claim_amount'] !== null) {
+                // Receipt photo goes through the same decode-to-file path so the
+                // base64 string is never written into the VARCHAR attachment column.
+                $claimReceiptPath = null;
+                if (! empty($data['claim_receipt_photo'])) {
+                    $maybePath = $this->storePhotoBytes($data['claim_receipt_photo'])[0];
+                    if ($maybePath && ! str_contains($maybePath, 'base64,')) {
+                        $claimReceiptPath = $maybePath;
+                    }
+                }
+
+                $verification = PaymentVerification::create([
+                    'bill_id' => $bill->id,
+                    'property_id' => $data['claim_property_id'] ?? $bill->property_id,
+                    'tin' => $data['claim_tin'] ?? $bill->tin,
+                    'tax_due_date' => $data['claim_tax_due_date'] ?? null,
+                    'document_number' => $bill->document_number,
+                    'receipt_number' => $data['claim_receipt_number'],
+                    'receipt_bill_number' => $bill->document_number,
+                    'amount_claimed' => $data['claim_amount'],
+                    'payment_period' => null,
+                    'receipt_attachment' => $claimReceiptPath ?? $storedPhoto,
+                    'match_status' => PaymentVerification::MATCH_PENDING,
+                    'verification_status' => PaymentVerification::STATUS_PENDING,
+                ]);
+
+                $bill->case_status = 'Under Verification';
+                $bill->payment_status = 'Payment Claimed';
+                $bill->save();
+
+                // Use the authorized task if one exists for this bill; otherwise look up by task_id.
+                $claimTask = $task ?? Task::where('reference_type', 'property_bill')
+                    ->where('reference_id', $bill->id)
+                    ->where('assigned_to', $user->id)
+                    ->first();
+
+                if ($claimTask) {
+                    if (in_array($claimTask->status, ['Assigned', 'Out for Delivery', 'Delivered'], true)) {
+                        try {
+                            $claimTask->transitionTo('Payment Claimed', 'payment_claim', $user, 'Claimed on the spot during field visit.');
+                        } catch (\InvalidArgumentException $e) {
+                            // non-blocking
+                        }
+                    }
+                    $claimTask->recordEngagement('payment_claim', 'claim_submitted', "On-the-spot claim for bill {$bill->document_number} awaiting verification.", $user, now());
+                }
+
+                $this->tasks->notifySection('ACCT', 'Payment claim', "On-the-spot claim for bill {$bill->document_number} awaiting verification.", 'payments');
+                $this->audit->record($bill, 'payments.claimed_onspot', $user->id, [], ['verification_id' => $verification->id]);
+            }
+
+            $this->audit->record($visit, 'enforcement.visit_complete', $user->id, [], ['task_id' => $visit->task_id]);
+
+            $payload = [
+                'id' => $visit->id,
+                'visit_reference' => $visit->visit_reference,
+                'task_id' => $visit->task_id,
+                'bill_id' => $visit->bill_id,
+                'gps_accuracy' => $visit->gps_accuracy,
+            ];
+            if ($syncId) {
+                $this->sync->record($user->id, $syncId, 'visit', (int) $visit->id, $payload);
+            }
+
+            return $payload;
+        });
 
         return response()->json([
-            'data' => $payload,
+            'data' => $visitPayload,
             'message' => 'Visit recorded.',
         ], 201);
     }
@@ -494,39 +656,42 @@ class EnforcementController extends Controller
 
         $gps = trim($data['gps_lat'].','.$data['gps_lng']);
 
-        $discovery = PropertyDiscovery::create([
-            'owner_name' => $data['owner_name'] ?: null,
-            'property_address' => $data['property_address'],
-            'property_classification' => $data['property_classification'] ?? null,
-            'gps_coordinate' => $gps,
-            'status' => PropertyDiscovery::STATUS_DISCOVERED,
-            'discovered_by' => $user->id,
-            'source' => 'field',
-            'remarks' => 'Discovery submission by user #'.$user->id.'.',
-        ]);
+        $discoveryPayload = DB::transaction(function () use ($data, $user, $syncId, $gps) {
+            $discovery = PropertyDiscovery::create([
+                'owner_name' => $data['owner_name'] ?: null,
+                'property_address' => $data['property_address'],
+                'property_classification' => $data['property_classification'] ?? null,
+                'gps_coordinate' => $gps,
+                'status' => PropertyDiscovery::STATUS_DRAFT,
+                'discovered_by' => $user->id,
+                'remarks' => 'Discovery submission by user #'.$user->id.'.',
+            ]);
 
-        foreach ($data['documents'] ?? [] as $label => $dataUri) {
-            $this->storeDiscoveryPhoto($discovery, is_string($dataUri) ? $dataUri : ($dataUri['data'] ?? null), (string) $label, $user->id, $gps);
-        }
+            foreach ($data['documents'] ?? [] as $label => $dataUri) {
+                $this->storeDiscoveryPhoto($discovery, is_string($dataUri) ? $dataUri : ($dataUri['data'] ?? null), (string) $label, $user->id, $gps);
+            }
 
-        $this->audit->record($discovery, 'discovery.created', $user->id, [], [
-            'discovery_reference' => $discovery->discovery_reference,
-        ]);
+            $this->audit->record($discovery, 'discovery.created', $user->id, [], [
+                'discovery_reference' => $discovery->discovery_reference,
+            ]);
 
-        $this->tasks->notifySection('VAL', 'Property discovery', "Discovery {$discovery->discovery_reference} for {$data['property_address']} is queued for review.", 'discovery');
+            $this->tasks->notifySection('VAL', 'Property discovery', "Discovery {$discovery->discovery_reference} for {$data['property_address']} is queued for review.", 'discovery');
 
-        $payload = ['id' => $discovery->id, 'discovery_reference' => $discovery->discovery_reference, 'status' => $discovery->status];
-        if ($syncId) {
-            $this->sync->record($user->id, $syncId, 'discovery', (int) $discovery->id, $payload);
-        }
+            $payload = ['id' => $discovery->id, 'discovery_reference' => $discovery->discovery_reference, 'status' => $discovery->status];
+            if ($syncId) {
+                $this->sync->record($user->id, $syncId, 'discovery', (int) $discovery->id, $payload);
+            }
+
+            return $payload;
+        });
 
         return response()->json([
-            'data' => $payload,
+            'data' => $discoveryPayload,
             'message' => 'Property discovery registered for downstream processing.',
         ], 201);
     }
 
-private function visitOutcome(string $visitStatus): string
+    private function visitOutcome(string $visitStatus): string
     {
         $status = strtolower($visitStatus);
         $map = [
@@ -560,29 +725,16 @@ private function visitOutcome(string $visitStatus): string
             return;
         }
 
-        $filePath = null;
-        $mime = 'image/jpeg';
-
-        if (str_contains($dataUri, 'base64,')) {
-            $b64 = Str::after($dataUri, 'base64,');
-            if (str_starts_with($dataUri, 'data:')) {
-                $mime = Str::between($dataUri, 'data:', ';');
-            }
-            $bytes = base64_decode(trim($b64), true);
-            if ($bytes !== false) {
-                $name = 'evidence/'.Str::lower(Str::random(1)).'/'.date('Ymd_His').'_'.Str::random(16).'.'.Str::after($mime, '/');
-                \Illuminate\Support\Facades\Storage::disk('local')->put($name, $bytes);
-                $filePath = $name;
-            }
-        }
+        [$filePath, $mime, $sizeBytes] = $this->storePhotoBytes($dataUri);
 
         EvidencePhoto::create([
             'photo_type' => 'PROPERTY_FULL_VIEW',
             'discovery_id' => $discovery->id,
             'officer_id' => $userId,
-            'file_path' => $filePath ?: $dataUri,
+            'file_path' => $filePath,
             'original_name' => $label,
             'mime' => $mime,
+            'size_bytes' => $sizeBytes,
             'gps_coordinate' => $gps,
             'captured_at' => now(),
             'remarks' => $label,
@@ -590,7 +742,43 @@ private function visitOutcome(string $visitStatus): string
     }
 
     /**
+     * Accept a photo as a base64 data URI (decode + persist bytes) or as a
+     * device/reference path (kept verbatim — evidence of capture only).
+     */
+    private function storePhotoBytes(?string $photo): array
+    {
+        if (! $photo || ! str_contains($photo, 'base64,')) {
+            return [$photo, null, null];
+        }
+
+        $mime = 'image/jpeg';
+        if (str_starts_with($photo, 'data:')) {
+            $mime = Str::between($photo, 'data:', ';');
+        }
+        $bytes = base64_decode(trim(Str::after($photo, 'base64,')), true);
+        if ($bytes === false || $bytes === '') {
+            return [$photo, null, null];
+        }
+
+        $ext = Str::after($mime, '/');
+        if (! preg_match('/^[a-z0-9+.-]+$/i', $ext)) {
+            $ext = 'jpg';
+        }
+        $name = 'evidence/'.Str::lower(Str::random(1)).'/'.date('Ymd_His').'_'.Str::random(16).'.'.$ext;
+        Storage::disk('local')->put($name, $bytes);
+
+        return [$name, $mime, strlen($bytes)];
+    }
+
+    /**
      * Payment claim from the field (mobile receipt submission).
+     *
+     * Runs as a single transaction: the bill is locked, the receipt's
+     * fingerprint is checked against every claim (active or approved), the
+     * claim is created and the fingerprint reserved under a unique constraint —
+     * so two officers submitting the same receipt at the same instant cannot
+     * both win, and a receipt already approved for one property can never be
+     * claimed for another.
      */
     public function submitReceipt(Request $request)
     {
@@ -609,6 +797,8 @@ private function visitOutcome(string $visitStatus): string
             'period' => 'nullable|string|max:50',
             'payment_period' => 'nullable|string|max:50',
             'receipt_number' => 'required|string|max:80',
+            'receipt_date' => 'nullable|date',
+            'payment_date' => 'nullable|date',
             'receipt_photo' => 'nullable|string',
             'receipt_attachment' => 'nullable|string',
             'property_id' => 'nullable|string|max:60',
@@ -617,55 +807,183 @@ private function visitOutcome(string $visitStatus): string
             'local_transaction_id' => 'nullable|string|max:80',
         ]);
 
-        $bill = PropertyBill::where('document_number', $data['billing_number'])->first()
-            ?? (($data['bill_id'] ?? null) ? PropertyBill::find($data['bill_id']) : null);
+        try {
+            $verification = DB::transaction(function () use ($user, $data, $syncId) {
+                $bill = PropertyBill::where('document_number', $data['billing_number'])->first()
+                    ?? (($data['bill_id'] ?? null) ? PropertyBill::find($data['bill_id']) : null);
 
-        if (! $bill) {
-            abort(422, 'No bill matches the reference provided.');
-        }
-
-        $verification = PaymentVerification::create([
-            'bill_id' => $bill->id,
-            'claimed_by' => $user->id,
-            'property_id' => $data['property_id'] ?? $bill->property_id,
-            'tin' => $data['tin'] ?? $bill->tin,
-            'tax_due_date' => $data['tax_due_date'] ?? null,
-            'document_number' => $bill->document_number,
-            'receipt_number' => $data['receipt_number'],
-            'receipt_bill_number' => $data['billing_number'],
-            'amount_claimed' => $data['amount'],
-            'payment_period' => $data['payment_period'] ?? $data['period'] ?? null,
-            'receipt_attachment' => $data['receipt_attachment'] ?? $data['receipt_photo'] ?? null,
-            'match_status' => PaymentVerification::MATCH_PENDING,
-            'verification_status' => PaymentVerification::STATUS_PENDING,
-        ]);
-
-        // Mark the bill + task so the Account section can action the queue.
-        $bill->update(['case_status' => 'Under Verification', 'payment_status' => 'Payment Claimed']);
-
-        if ($bill->tasks()->exists()) {
-            $task = $bill->tasks()->orderByDesc('id')->first();
-            $task->recordEngagement('payment_claim', 'claim_submitted', "Payment claim for bill {$bill->document_number} submitted via receipt.", $user);
-            if (in_array($task->status, ['Assigned', 'Out for Delivery', 'Delivered', 'Payment Follow-up'], true)) {
-                try {
-                    $task->transitionTo('Payment Claimed', 'payment_claim', $user, 'Payment claim submitted.');
-                    $task->update(['task_id' => null]);
-                } catch (\InvalidArgumentException $e) {
-                    // non-blocking
+                if (! $bill) {
+                    abort(422, 'No bill matches the reference provided.');
                 }
+                abort_unless($data['billing_number'] === $bill->document_number, 422, 'The bill reference does not match the selected bill.');
+
+                // Lock the bill row so concurrent submissions for the same bill are
+                // serialized; the fingerprint's unique constraint is the backstop
+                // for simultaneous submissions against different bills.
+                $bill = PropertyBill::whereKey($bill->id)->lockForUpdate()->first();
+
+                // Ownership gate: only the officer assigned to the bill may claim payment.
+                $claimTask = $bill->tasks()
+                    ->where('assigned_to', $user->id)
+                    ->whereIn('status', ['Assigned', 'Out for Delivery', 'Delivered', 'Payment Follow-up', 'Payment Rejected'])
+                    ->orderByDesc('id')
+                    ->lockForUpdate()
+                    ->first();
+
+                if (! $user->isSystemAdministrator()) {
+                    abort_unless(
+                        $bill->tasks()->where('assigned_to', $user->id)->exists(),
+                        403,
+                        'You can only submit payment claims for bills assigned to you.',
+                    );
+                }
+
+                if ($data['bill_id'] ?? null) {
+                    abort_unless((int) $data['bill_id'] === (int) $bill->id, 422, 'The bill reference does not match the selected bill.');
+                }
+                if ($data['property_id'] ?? null) {
+                    abort_unless($bill->property_id && $data['property_id'] === $bill->property_id, 422, 'The property reference does not match the selected bill.');
+                }
+
+                $period = $data['payment_period'] ?? $data['period'] ?? null;
+
+                // The duplicate service searches the complete receipt dataset but
+                // this path surfaces only the block reason back to the officer.
+                $assess = $this->duplicates->assess([
+                    'receipt_number' => $data['receipt_number'],
+                    'amount' => $data['amount'],
+                    'period' => $period,
+                    'bill_id' => $bill->id,
+                    'property_id' => $data['property_id'] ?? $bill->property_id,
+                ]);
+
+                if ($assess['hard_block']) {
+                    throw ReceiptConflictException::make((string) $assess['block_reason'], [
+                        'bill_id' => $bill->id,
+                        'receipt_number' => $assess['normalized_receipt_number'],
+                        'fingerprint' => $assess['fingerprint'],
+                    ]);
+                }
+                if (! $user->isSystemAdministrator()) {
+                    abort_unless($claimTask, 422, 'This bill has no active task available for a new payment claim.');
+                }
+
+                // Receipt photo: base64 data URIs are decoded to real stored bytes so
+                // the artifact is downloadable; device/reference paths stay verbatim.
+                [$attachmentPath, $attachMime, $attachSize] = $this->storePhotoBytes($data['receipt_attachment'] ?? $data['receipt_photo'] ?? null);
+
+                $verification = PaymentVerification::create([
+                    'task_id' => $claimTask?->id,
+                    'bill_id' => $bill->id,
+                    'claimed_by' => $user->id,
+                    'property_id' => $data['property_id'] ?? $bill->property_id,
+                    'tin' => $data['tin'] ?? $bill->tin,
+                    'tax_due_date' => $data['tax_due_date'] ?? null,
+                    'receipt_date' => $data['receipt_date'] ?? $data['payment_date'] ?? null,
+                    'document_number' => $bill->document_number,
+                    'receipt_number' => $assess['normalized_receipt_number'],
+                    'receipt_bill_number' => $data['billing_number'],
+                    'amount_claimed' => $data['amount'],
+                    'payment_period' => $period,
+                    'receipt_attachment' => $attachmentPath,
+                    'receipt_fingerprint' => $assess['fingerprint'],
+                    'duplicate_warnings' => $assess['warnings'] ?: null,
+                    'match_status' => PaymentVerification::MATCH_PENDING,
+                    'verification_status' => PaymentVerification::STATUS_PENDING,
+                ]);
+
+                // Reserve the fingerprint under a unique constraint. If another
+                // officer won the same receipt in the same instant, this insert
+                // violates the constraint and the whole transaction rolls back.
+                $this->reserveReceipt($verification);
+                $this->audit->record($verification, 'payment.claim_submitted', $user->id, [], [
+                    'bill_id' => $bill->id,
+                    'task_id' => $claimTask?->id,
+                    'verification_status' => PaymentVerification::STATUS_PENDING,
+                ]);
+
+                if ($attachmentPath) {
+                    EvidencePhoto::create([
+                        'photo_type' => 'OTHER',
+                        'bill_id' => $bill->id,
+                        'officer_id' => $user->id,
+                        'file_path' => $attachmentPath,
+                        'mime' => $attachMime,
+                        'size_bytes' => $attachSize,
+                        'remarks' => 'Payment receipt for bill '.$bill->document_number.' (claim #'.$verification->id.').',
+                    ]);
+                }
+
+                // Mark the bill + task so the Account section can action the queue.
+                $bill->update(['case_status' => 'Under Verification', 'payment_status' => 'Payment Claimed']);
+
+                if ($claimTask) {
+                    $claimTask->recordEngagement('payment_claim', 'claim_submitted', "Payment claim for bill {$bill->document_number} submitted via receipt.", $user);
+                    if ($claimTask->status === 'Payment Rejected') {
+                        $claimTask->transitionTo('Payment Follow-up', 'resubmitted', $user, 'A corrected payment claim was submitted.');
+                    }
+                    $claimTask->transitionTo('Payment Claimed', 'payment_claim', $user, 'Payment claim submitted.');
+                }
+
+                $this->tasks->notifySection('ACCT', 'Payment claim', "Payment claim for bill {$bill->document_number} awaiting verification.", 'payments');
+
+                if ($syncId) {
+                    $this->sync->record($user->id, $syncId, 'receipt', (int) $verification->id, ['id' => $verification->id, 'bill_id' => $bill->id, 'document_number' => $bill->document_number]);
+                }
+
+                return $verification;
+            });
+        } catch (ReceiptConflictException $e) {
+            $this->auditBlockedClaim($data, $user, 'receipt.duplicate_blocked', $e->context);
+
+            abort(422, $e->getMessage());
+        } catch (QueryException $e) {
+            // The only integrity violation this path can hit is the fingerprint
+            // reservation (SQLSTATE 23000). Anything else is a genuine database
+            // error and must surface as-is.
+            if ((string) $e->getCode() !== '23000') {
+                throw $e;
             }
-        }
 
-        $this->tasks->notifySection('ACCT', 'Payment claim', "Payment claim for bill {$bill->document_number} awaiting verification.", 'payments');
+            $this->auditBlockedClaim($data, $user, 'receipt.duplicate_conflict', [
+                'bill_id' => $data['bill_id'] ?? null,
+                'receipt_number' => $data['receipt_number'],
+            ]);
 
-        $payload = ['id' => $verification->id, 'bill_id' => $bill->id, 'document_number' => $bill->document_number];
-        if ($syncId) {
-            $this->sync->record($user->id, $syncId, 'receipt', (int) $verification->id, $payload);
+            abort(422, 'A conflicting claim for this receipt was submitted at almost the same moment. Please retry.');
         }
 
         return response()->json([
-            'data' => $payload,
+            'data' => ['id' => $verification->id, 'bill_id' => $verification->bill_id, 'document_number' => $verification->document_number],
             'message' => 'Payment claim submitted for verification.',
         ], 201);
+    }
+
+    /**
+     * Reserve the write-time uniqueness row for a freshly created claim.
+     */
+    private function reserveReceipt(PaymentVerification $verification): void
+    {
+        ReceiptFingerprint::create([
+            'fingerprint' => $verification->receipt_fingerprint,
+            'claim_id' => $verification->id,
+            'bill_id' => $verification->bill_id,
+            'property_id' => $verification->property_id,
+            'receipt_number' => ReceiptDuplicationService::normalizeReceiptNumber($verification->receipt_number),
+            'amount' => $verification->amount_claimed,
+            'payment_period' => $verification->payment_period ? ReceiptDuplicationService::normalizePeriod($verification->payment_period) : null,
+            'verification_status' => PaymentVerification::STATUS_PENDING,
+        ]);
+    }
+
+    /**
+     * Persist a blocked/conflicted receipt attempt on the audit trail. Runs
+     * after the rollback so the evidence outlives the failed transaction.
+     */
+    private function auditBlockedClaim(array $data, User $user, string $action, array $context): void
+    {
+        $bill = PropertyBill::where('document_number', $data['billing_number'])->first();
+
+        $this->audit->record($bill ?? $user, $action, $user->id, [], $context);
     }
 }

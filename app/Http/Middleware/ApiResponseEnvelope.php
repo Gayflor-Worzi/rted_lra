@@ -17,9 +17,16 @@ class ApiResponseEnvelope
     {
         $response = $next($request);
 
-        // Never wrap file downloads / non-JSON payloads (e.g. CSV/PDF exports)
+        // Never wrap payloads that are not JSON. This middleware exists to give the
+        // application's JSON responses one shape; a PDF, a CSV or an HTML print view
+        // is already in its final form and must reach the client untouched. Wrapping
+        // one of those would hand the browser a JSON envelope instead of the document
+        // it asked for - with `data: null`, so the document is simply gone.
         $contentType = $response->headers->get('Content-Type', '');
-        if (str_starts_with($contentType, 'text/csv') || $response->headers->has('Content-Disposition')) {
+        if (str_starts_with($contentType, 'text/csv')
+            || str_starts_with($contentType, 'text/html')
+            || str_starts_with($contentType, 'application/pdf')
+            || $response->headers->has('Content-Disposition')) {
             return $response;
         }
 

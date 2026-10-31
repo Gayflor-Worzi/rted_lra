@@ -56,7 +56,7 @@ return new class extends Migration
             $table->unsignedBigInteger('task_id')->nullable()->index();
             $table->unsignedBigInteger('visit_id')->nullable()->index();
             $table->unsignedBigInteger('valuation_id')->nullable()->index();
-            $table->string('property_id')->nullable(); // LITAS Property ID (never generated)
+            $table->string('property_id')->nullable(); // Source-system Property ID (never generated)
             $table->unsignedBigInteger('officer_id')->nullable()->index();
             $table->string('file_path');
             $table->string('original_name')->nullable();

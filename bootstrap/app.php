@@ -1,5 +1,13 @@
 <?php
 
+use App\Http\Middleware\ApiResponseEnvelope;
+use App\Http\Middleware\Authenticate;
+use App\Http\Middleware\CorsMiddleware;
+use App\Http\Middleware\EnsureActiveUser;
+use App\Http\Middleware\EnsurePasswordReset;
+use App\Http\Middleware\EnsurePermission;
+use App\Http\Middleware\LogAccessDenied;
+use App\Http\Middleware\SecurityHeaders;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -12,18 +20,21 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
-        $middleware->api(App\Http\Middleware\ApiResponseEnvelope::class);
-        $middleware->api(App\Http\Middleware\CorsMiddleware::class);
-        $middleware->api(App\Http\Middleware\LogAccessDenied::class);
-        $middleware->api(App\Http\Middleware\EnsurePasswordReset::class);
-        $middleware->append(App\Http\Middleware\SecurityHeaders::class);
+        $middleware->api(ApiResponseEnvelope::class);
+        $middleware->api(CorsMiddleware::class);
+        $middleware->api(LogAccessDenied::class);
+        $middleware->api(EnsurePasswordReset::class);
+        $middleware->api(EnsureActiveUser::class);
+        $middleware->append(SecurityHeaders::class);
         $middleware->alias([
-            'permission' => \App\Http\Middleware\EnsurePermission::class,
-            'auth' => \App\Http\Middleware\Authenticate::class,
+            'permission' => EnsurePermission::class,
+            'auth' => Authenticate::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->shouldRenderJsonWhen(
-            function ($request) { return $request->is('api/*') || $request->expectsJson(); },
+            function ($request) {
+                return $request->is('api/*') || $request->expectsJson();
+            },
         );
     })->create();

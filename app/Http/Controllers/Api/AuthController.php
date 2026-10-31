@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\User;
 use App\Services\EffectivePermissionResolver;
+use App\Services\EnforcementOfficerAssignmentService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\Rule;
@@ -13,6 +14,7 @@ use Illuminate\Validation\ValidationException;
 class AuthController extends Controller
 {
     public function __construct(private readonly EffectivePermissionResolver $effectivePermissions) {}
+
     public function login(Request $request)
     {
         $request->validate([
@@ -111,7 +113,7 @@ class AuthController extends Controller
 
     public static function present(User $user): array
     {
-        return [
+        $profile = [
             'id' => $user->id,
             'full_name' => $user->full_name,
             'email' => $user->email,
@@ -127,6 +129,13 @@ class AuthController extends Controller
             'section_id' => $user->section_id,
             'supervisor_id' => $user->supervisor_id,
         ];
+
+        if ($user->role?->name === 'Enforcement Officer') {
+            $profile['organizational_assignment'] = app(EnforcementOfficerAssignmentService::class)
+                ->forOfficer($user);
+        }
+
+        return $profile;
     }
 
     /** Validate that e-mail uniqueness respects the request's id when present.  */

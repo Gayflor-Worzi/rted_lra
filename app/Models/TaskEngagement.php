@@ -7,18 +7,29 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class TaskEngagement extends Model
 {
-    public const TYPE_DELIVERY_ATTEMPT   = 'delivery_attempt';
-    public const TYPE_BILL_DELIVERED     = 'bill_delivered';
-    public const TYPE_FOLLOW_UP          = 'follow_up';
-    public const TYPE_REMINDER_30_DAY    = 'reminder_30_day';
-    public const TYPE_DEMAND_72_HOUR     = 'demand_72_hour';
-    public const TYPE_FINAL_ENFORCEMENT  = 'final_enforcement';
-    public const TYPE_CLOSURE            = 'closure';
-    public const TYPE_PAYMENT_CLAIM      = 'payment_claim';
-    public const TYPE_VERIFICATION       = 'verification';
-    public const TYPE_PAYMENT_CONFIRMED  = 'payment_confirmed';
-    public const TYPE_ASSIGNMENT         = 'assignment';
-    public const TYPE_NOTE               = 'note';
+    public const TYPE_DELIVERY_ATTEMPT = 'delivery_attempt';
+
+    public const TYPE_BILL_DELIVERED = 'bill_delivered';
+
+    public const TYPE_FOLLOW_UP = 'follow_up';
+
+    public const TYPE_REMINDER_30_DAY = 'reminder_30_day';
+
+    public const TYPE_DEMAND_72_HOUR = 'demand_72_hour';
+
+    public const TYPE_FINAL_ENFORCEMENT = 'final_enforcement';
+
+    public const TYPE_CLOSURE = 'closure';
+
+    public const TYPE_PAYMENT_CLAIM = 'payment_claim';
+
+    public const TYPE_VERIFICATION = 'verification';
+
+    public const TYPE_PAYMENT_CONFIRMED = 'payment_confirmed';
+
+    public const TYPE_ASSIGNMENT = 'assignment';
+
+    public const TYPE_NOTE = 'note';
 
     public const TYPES = [
         self::TYPE_DELIVERY_ATTEMPT,
@@ -36,7 +47,9 @@ class TaskEngagement extends Model
     ];
 
     public const OUTCOMES_DELIVERY = ['handed_over', 'delivered', 'no_answer', 'refused', 'promised_payment'];
+
     public const OUTCOMES_FOLLOW_UP = ['contact_made', 'promised_payment', 'paid', 'no_contact'];
+
     public const OUTCOMES_NOTICE = ['notice_issued', 'notice_served'];
 
     protected $table = 'task_engagements';

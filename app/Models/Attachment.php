@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\MorphTo;
 
 class Attachment extends Model
 {
@@ -16,7 +17,7 @@ class Attachment extends Model
         'description',
     ];
 
-    public function attachable(): \Illuminate\Database\Eloquent\Relations\MorphTo
+    public function attachable(): MorphTo
     {
         return $this->morphTo();
     }

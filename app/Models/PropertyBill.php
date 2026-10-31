@@ -2,14 +2,15 @@
 
 namespace App\Models;
 
+use App\Services\PropertyIdentityService;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
 /**
- * RETD Bill Register — a log of LITAS-generated bills.
- * Document # / Property ID are LITAS identifiers; never generated here.
+ * RETD Bill Register — a log of source-system-generated bills.
+ * Document # / Property ID are source-system identifiers; never generated here.
  */
 class PropertyBill extends Model
 {
@@ -21,6 +22,8 @@ class PropertyBill extends Model
         'Out for Delivery',
         'Delivered',
         'Returned',
+        'Undelivered',
+        'Not Mailable',
         'Filed',
     ];
 
@@ -93,6 +96,7 @@ class PropertyBill extends Model
         'approval_status',
         'property_photo',
         'assigned_enforcement_officer_id',
+        'primary_tax_district_id',
         'remarks',
     ];
 
@@ -123,6 +127,11 @@ class PropertyBill extends Model
         return $this->belongsTo(User::class, 'assigned_enforcement_officer_id');
     }
 
+    public function primaryTaxDistrict(): BelongsTo
+    {
+        return $this->belongsTo(EnforcementDistrict::class, 'primary_tax_district_id');
+    }
+
     public function tasks(): HasMany
     {
         return $this->hasMany(Task::class, 'reference_id')
@@ -149,6 +158,12 @@ class PropertyBill extends Model
         return $this->hasMany(Valuation::class, 'bill_id');
     }
 
+    /** Permanent property identity shared across every section. */
+    public function propertyRef(): BelongsTo
+    {
+        return $this->belongsTo(Property::class, 'property_ref_id');
+    }
+
     protected static function booted(): void
     {
         // Derived financial fields can never drift: whenever the assessed
@@ -156,6 +171,13 @@ class PropertyBill extends Model
         // and payment status are recomputed from the verified payments.
         static::saving(function (PropertyBill $bill) {
             static::onRecalcFields($bill);
+        });
+
+        // A logged bill is a record of an underlying property: give it the
+        // permanent identity for its source Property ID, or the identity of the
+        // valuation that produced it, or its own when neither exists.
+        static::created(function (PropertyBill $bill) {
+            app(PropertyIdentityService::class)->forBill($bill);
         });
     }
 
@@ -179,6 +201,50 @@ class PropertyBill extends Model
         if (! $bill->isDirty('payment_status')) {
             $bill->payment_status = $derivedStatus;
         }
+    }
+
+    /**
+     * The one-assessment rule: find the live assessment for a property and tax
+     * period.
+     *
+     * Property ID + Tax Period identify one property's assessment for a period;
+     * a property is logged once per period. The TIN is compared only when both
+     * sides carry one, because a bill recorded from a property discovery can
+     * reach the register without a TIN. Treating "no TIN" as "a different
+     * property" is what allowed the same assessment to be logged twice — the
+     * record without the TIN was invisible to the duplicate check. Two bills
+     * with two different, non-empty TINs remain distinct.
+     *
+     * Matching is case/whitespace-insensitive and never counts soft-deleted
+     * bills.
+     */
+    public static function findEquivalentAssessment(
+        string $propertyId,
+        ?string $tin,
+        ?string $taxPeriod,
+        ?int $excludeId = null,
+    ): ?PropertyBill {
+        $propertyId = trim($propertyId);
+        $tin = trim((string) $tin);
+        $period = trim((string) $taxPeriod);
+
+        if ($propertyId === '') {
+            return null;
+        }
+
+        return static::query()
+            ->whereRaw('UPPER(TRIM(COALESCE(property_id, \'\'))) = ?', [mb_strtoupper($propertyId)])
+            ->whereRaw('UPPER(TRIM(COALESCE(tax_period, \'\'))) = ?', [mb_strtoupper($period)])
+            ->when($tin !== '', function ($q) use ($tin) {
+                // Only a stored, different TIN makes this a different assessment.
+                $q->where(function ($t) use ($tin) {
+                    $t->whereRaw('TRIM(COALESCE(tin, \'\')) = \'\'')
+                        ->orWhereRaw('UPPER(TRIM(COALESCE(tin, \'\'))) = ?', [mb_strtoupper($tin)]);
+                });
+            })
+            ->when($excludeId, fn ($q) => $q->where('id', '!=', $excludeId))
+            ->orderBy('id')
+            ->first();
     }
 
     /** Recompute outstanding balance from verified payments. */

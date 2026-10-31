@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class TaskHistory extends Model
 {
@@ -17,4 +18,9 @@ class TaskHistory extends Model
         'remarks',
         'created_at',
     ];
+
+    public function task(): BelongsTo
+    {
+        return $this->belongsTo(Task::class, 'task_id');
+    }
 }

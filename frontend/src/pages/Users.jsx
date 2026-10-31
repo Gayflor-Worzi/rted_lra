@@ -8,7 +8,6 @@ export default function Users() {
   const [rows, setRows] = useState(null)
   const [sections, setSections] = useState([])
   const [assignableRoles, setAssignableRoles] = useState([])
-  const [supervisors, setSupervisors] = useState([])
   const [err, setErr] = useState(null)
   const [flash, setFlash] = useState('')
   const [q, setQ] = useState('')
@@ -33,7 +32,6 @@ export default function Users() {
   useEffect(() => {
     api.get('/sections').then((r) => setSections(unwrap(r).data || [])).catch(() => {})
     api.get('/lookup/roles').then((r) => setAssignableRoles(unwrap(r).data || [])).catch(() => {})
-    api.get('/lookup/supervisors').then((r) => setSupervisors(unwrap(r).data || [])).catch(() => {})
     loadUsers()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -85,7 +83,7 @@ export default function Users() {
       <ErrorBox error={err} />
 
       {showCreate && (
-        <CreateForm sections={sections} roles={assignableRoles} supervisors={supervisors}
+        <CreateForm sections={sections} roles={assignableRoles}
           onDone={() => { setShowCreate(false); setFlash('Account created (inactive until activated).'); setTimeout(() => setFlash(''), 3000); loadUsers() }} />
       )}
 
@@ -156,7 +154,7 @@ export default function Users() {
         </div>
       </Card>
 
-      {editFor && <EditForm user={editFor} sections={sections} roles={assignableRoles} supervisors={supervisors}
+      {editFor && <EditForm user={editFor} sections={sections} roles={assignableRoles}
         onClose={() => setEditFor(null)}
         onDone={(msg) => { setEditFor(null); setFlash(msg); setTimeout(() => setFlash(''), 3000); loadUsers() }} />}
 
@@ -165,9 +163,10 @@ export default function Users() {
   )
 }
 
-function CreateForm({ sections, roles, supervisors, onDone }) {
+function CreateForm({ sections, roles, onDone }) {
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
+  const [supervisors, supervisorsErr] = useSupervisors()
   const [form, setForm] = useState({ full_name: '', email: '', password: '', staff_id: '', section_id: '', role_id: '', supervisor_id: '' })
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value })
 
@@ -187,6 +186,7 @@ function CreateForm({ sections, roles, supervisors, onDone }) {
       <form onSubmit={submit} className="grid sm:grid-cols-2 gap-4">
         <L label="Full name"><Input className="w-full" value={form.full_name} onChange={set('full_name')} required /></L>
         <L label="Email"><Input className="w-full" type="email" value={form.email} onChange={set('email')} required /></L>
+        <L label="Phone / contact"><Input className="w-full" value={form.phone} onChange={set('phone')} placeholder="e.g. +231 777 000 000" /></L>
         <L label="Temporary password"><Input className="w-full" type="password" value={form.password} onChange={set('password')} required minLength={8} /></L>
         <L label="Staff ID"><Input className="w-full" value={form.staff_id} onChange={set('staff_id')} /></L>
         <L label="Section"><select className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm bg-white" value={form.section_id} onChange={set('section_id')} required>
@@ -200,7 +200,8 @@ function CreateForm({ sections, roles, supervisors, onDone }) {
         <L label="Reports to (supervisor)"><select className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm bg-white" value={form.supervisor_id} onChange={set('supervisor_id')}>
           <option value="">— No supervisor —</option>
           {supervisors.map((s) => <option key={s.id} value={s.id}>{s.full_name} — {s.role} ({s.section})</option>)}
-        </select></L>
+        </select>
+        {supervisorsErr && <div className="mt-1 text-xs text-amber-600">Could not load supervisor list: {supervisorsErr}</div>}</L>
         <div className="sm:col-span-2 flex items-end">
           <Btn type="submit" disabled={busy} className="px-6">{busy ? 'Creating…' : 'Create account'}</Btn>
           <span className="ml-3 text-[11px] text-slate-400">New accounts start inactive and require a password change on first login.</span>
@@ -214,12 +215,14 @@ function L({ label, children }) {
   return <div><label className="block text-xs font-semibold text-slate-600 mb-1.5">{label}</label>{children}</div>
 }
 
-function EditForm({ user, sections, roles, supervisors, onClose, onDone }) {
+function EditForm({ user, sections, roles, onClose, onDone }) {
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
+  const [supervisors, supervisorsErr] = useSupervisors()
   const [form, setForm] = useState({
     full_name: user.full_name || '',
     email: user.email || '',
+    phone: user.phone || '',
     staff_id: user.staff_id || '',
     section_id: user.section_id || '',
     role_id: user.role_id || '',
@@ -234,6 +237,7 @@ function EditForm({ user, sections, roles, supervisors, onClose, onDone }) {
     const payload = {
       full_name: form.full_name,
       email: form.email,
+      phone: form.phone,
       staff_id: form.staff_id,
       section_id: form.section_id,
       role_id: form.role_id,
@@ -261,6 +265,7 @@ function EditForm({ user, sections, roles, supervisors, onClose, onDone }) {
         <form onSubmit={submit} className="grid sm:grid-cols-2 gap-4">
           <L label="Full name"><Input className="w-full" value={form.full_name} onChange={set('full_name')} required /></L>
           <L label="Email"><Input className="w-full" type="email" value={form.email} onChange={set('email')} required /></L>
+          <L label="Phone / contact"><Input className="w-full" value={form.phone} onChange={set('phone')} placeholder="e.g. +231 777 000 000" /></L>
           <L label="Staff ID"><Input className="w-full" value={form.staff_id} onChange={set('staff_id')} /></L>
           <L label="New password (leave blank to keep current)"><Input className="w-full" type="password" value={form.password} onChange={set('password')} minLength={8} placeholder="••••••••" autoComplete="new-password" /></L>
           <L label="Section"><select className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm bg-white" value={form.section_id} onChange={set('section_id')} required>
@@ -274,7 +279,8 @@ function EditForm({ user, sections, roles, supervisors, onClose, onDone }) {
           <L label="Reports to (supervisor)"><select className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm bg-white" value={form.supervisor_id} onChange={set('supervisor_id')}>
             <option value="">— No supervisor —</option>
             {supervisors.map((s) => <option key={s.id} value={s.id}>{s.full_name} — {s.role} ({s.section})</option>)}
-          </select></L>
+          </select>
+          {supervisorsErr && <div className="mt-1 text-xs text-amber-600">Could not load supervisor list: {supervisorsErr}</div>}</L>
           <div className="sm:col-span-2 flex items-center gap-3">
             <Btn type="submit" disabled={busy} className="px-6">{busy ? 'Saving…' : 'Save changes'}</Btn>
             <Btn tone="white" type="button" onClick={onClose}>Cancel</Btn>
@@ -483,4 +489,19 @@ function Chip({ on, label }) {
       {label}
     </span>
   )
+}
+
+/** Load the current active staff list fresh each time a form opens, so the
+ *  "Reports to (supervisor)" selector always reflects the latest users. */
+function useSupervisors() {
+  const [supervisors, setSupervisors] = useState([])
+  const [error, setError] = useState('')
+  useEffect(() => {
+    let live = true
+    api.get('/lookup/supervisors')
+      .then((r) => { if (live) setSupervisors(unwrap(r).data || []) })
+      .catch((e) => { if (live) setError(errMsg(e, 'request failed.')) })
+    return () => { live = false }
+  }, [])
+  return [supervisors, error]
 }

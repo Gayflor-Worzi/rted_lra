@@ -2,12 +2,12 @@ import { useEffect, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 import api, { unwrap, errMsg } from '../api'
 import { Card, Badge, Spinner, ErrorBox, PageTitle, Btn, Input, fmtDate, fmtTime, fmtMoney } from '../ui'
-import { discoveryStatusInfo, targetMetricLabel, TASK_STATUSES, CASE_STATUSES, DELIVERY_STATUSES, DISCOVERY_STATUSES, DISCOVERY_PATHS } from '../lib/constants'
+import { discoveryStatusInfo, targetMetricLabel, TASK_STATUSES, CASE_STATUSES, DELIVERY_STATUSES, DISCOVERY_STATUSES, DISCOVERY_PATHS, VALUATION_STATUSES } from '../lib/constants'
 
 const TABLE_META = {
   tasks: { title: 'Tasks', cols: ['task_reference', 'task_type', 'status', 'assigned_to', 'due_date', 'created_at'], filter: ['status', 'section'], options: { status: TASK_STATUSES, section: ['Enforcement', 'Valuation'] } },
   bills: { title: 'Bills', cols: ['tin', 'property_id', 'document_number', 'taxpayer_name', 'property_address', 'property_classification', 'property_type', 'tax_period', 'assessed_value', 'tax_amount', 'interest_charged', 'penalty_charged', 'total_tax_due', 'outstanding_balance', 'case_status', 'payment_status', 'account_staff', 'enforcement_officer', 'date_logged'], filter: ['case_status', 'recipient_type', 'logged_by', 'assigned_to'], options: { case_status: CASE_STATUSES, recipient_type: ['Walk-in', 'Section', 'Dispatch'] } },
-  valuations: { title: 'Valuations', cols: ['valuation_reference', 'property_id', 'owner_name', 'status', 'assessed_value', 'annual_tax', 'valuation_officer', 'created_at'], filter: ['status'], options: { status: ['Draft', 'Submitted', 'Pending Review', 'Manager Approved', 'Approved', 'Rejected', 'Completed'] } },
+  valuations: { title: 'Valuations', cols: ['valuation_reference', 'property_id', 'owner_name', 'status', 'assessed_value', 'annual_tax', 'valuation_officer', 'created_at'], filter: ['status'], options: { status: VALUATION_STATUSES } },
   visits: { title: 'Visits', cols: ['id', 'visit_date', 'delivery_status', 'officer', 'remarks', 'created_at'], filter: ['delivery_status'], options: { delivery_status: DELIVERY_STATUSES } },
   discoveries: { title: 'Discoveries', cols: ['discovery_reference', 'owner_name', 'property_address', 'status', 'decision_path', 'discoverer', 'created_at'], filter: ['status', 'decision_path'], options: { status: DISCOVERY_STATUSES, decision_path: DISCOVERY_PATHS } },
   staff: { title: 'Staff', cols: ['staff_id', 'full_name', 'email', 'role', 'section', 'is_active'], filter: ['section', 'role'] },
@@ -45,7 +45,14 @@ const CELL = {
 }
 
 function statusTone(s) {
-  const m = { Completed: 'green', Approved: 'green', Paid: 'green', Resolved: 'green', Delivered: 'blue', Submitted: 'amber', Escalated: 'red', Rejected: 'red', Overdue: 'red', Closed: 'slate' }
+  const m = {
+    Completed: 'green', Approved: 'green', Paid: 'green', Resolved: 'green', Delivered: 'blue',
+    Submitted: 'amber', Escalated: 'red', Rejected: 'red', Overdue: 'red', Closed: 'slate',
+    Assigned: 'slate', 'Assessment in Progress': 'blue', 'Submitted to Manager': 'amber',
+    'Under Manager Review': 'amber', 'Returned for Correction': 'red', 'Submitted to AC': 'blue',
+    'Awaiting AC Approval': 'amber', 'AC Approved': 'green', 'AC Returned': 'red', 'AC Rejected': 'red',
+    'Sent to Account & Record': 'blue', 'Registered': 'navy',
+  }
   return m[s] || 'navy'
 }
 

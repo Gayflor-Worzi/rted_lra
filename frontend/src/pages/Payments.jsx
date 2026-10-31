@@ -127,7 +127,7 @@ export default function Payments() {
 }
 
 function ConfirmModal({ row, onClose, onSaved }) {
-  const [form, setForm] = useState({ verified_amount: '', litas_reference: '', remarks: '' })
+  const [form, setForm] = useState({ verified_amount: '', source_reference: '', remarks: '' })
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
 
@@ -137,7 +137,7 @@ function ConfirmModal({ row, onClose, onSaved }) {
     try {
       const r = await api.post(`/payments/verifications/${row.id}/confirm`, {
         verified_amount: form.verified_amount ? Number(form.verified_amount) : undefined,
-        litas_reference: form.litas_reference.trim() || undefined,
+        source_reference: form.source_reference.trim() || undefined,
         remarks: form.remarks.trim() || undefined,
       })
       onSaved(unwrap(r).message)
@@ -157,8 +157,8 @@ function ConfirmModal({ row, onClose, onSaved }) {
           <Input className="w-full" type="number" min="0" step="0.01" value={form.verified_amount}
             onChange={(e) => setForm({ ...form, verified_amount: e.target.value })} placeholder={String(row.amount_claimed ?? '')} />
         </Field>
-        <Field label="LITAS reference">
-          <Input className="w-full" value={form.litas_reference} onChange={(e) => setForm({ ...form, litas_reference: e.target.value })} placeholder="e.g. 4-45720/LRD/2026" />
+        <Field label="Source reference">
+          <Input className="w-full" value={form.source_reference} onChange={(e) => setForm({ ...form, source_reference: e.target.value })} placeholder="e.g. 4-45720/LRD/2026" />
         </Field>
         <Field label="Remarks">
           <Input className="w-full" value={form.remarks} onChange={(e) => setForm({ ...form, remarks: e.target.value })} placeholder="Optional note" />
@@ -201,7 +201,7 @@ function RejectModal({ row, onClose, onSaved }) {
           <textarea rows={3} value={form.reason}
             onChange={(e) => setForm({ ...form, reason: e.target.value })}
             className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500"
-            placeholder="e.g. Receipt does not match LITAS records" />
+            placeholder="e.g. Receipt does not match source records" />
         </div>
         <label className="flex items-center gap-2 text-sm text-slate-600">
           <input type="checkbox" checked={form.mismatch} onChange={(e) => setForm({ ...form, mismatch: e.target.checked })} />
@@ -227,13 +227,28 @@ function Field({ label, children }) {
 
 function ReceiptModal({ row, onClose }) {
   const [data, setData] = useState(null)
+  const [photoUrl, setPhotoUrl] = useState('')
   const [err, setErr] = useState('')
 
   useEffect(() => {
     api.get(`/payments/verifications/${row.id}/receipt`)
-      .then((r) => setData(unwrap(r).data))
+      .then(async (r) => {
+        const d = unwrap(r).data
+        setData(d)
+        const attach = d?.receipt_attachment
+        if (attach && !/^https?:/.test(attach)) {
+          try {
+            const fr = await api.get(`/payments/verifications/${row.id}/receipt-file`, { responseType: 'blob' })
+            setPhotoUrl(URL.createObjectURL(fr.data))
+          } catch {
+            setPhotoUrl('')
+          }
+        }
+      })
       .catch((ex) => setErr(errMsg(ex, 'Could not load receipt.')))
   }, [row.id]) // eslint-disable-line
+
+  useEffect(() => () => { if (photoUrl) URL.revokeObjectURL(photoUrl) }, [photoUrl])
 
   return (
     <div className="fixed inset-0 z-50 bg-black/40 overflow-y-auto" onClick={onClose}>
@@ -242,7 +257,7 @@ function ReceiptModal({ row, onClose }) {
           <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
             <div>
               <h2 className="font-bold text-navy-800">Payment receipt</h2>
-              <p className="text-xs text-slate-400">{row.document_number} · compare against LITAS records before confirming.</p>
+              <p className="text-xs text-slate-400">{row.document_number} · compare against source records before confirming.</p>
             </div>
             <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-600 text-2xl leading-none px-2">×</button>
           </div>
@@ -252,8 +267,8 @@ function ReceiptModal({ row, onClose }) {
             {!data && !err && <div className="py-8 text-center text-sm text-slate-400">Loading receipt…</div>}
             {data && (
               <>
-                {data.receipt_attachment ? (
-                  <img src={data.receipt_attachment} alt="Receipt attachment"
+                {(photoUrl || (data.receipt_attachment && /^https?:/.test(data.receipt_attachment))) ? (
+                  <img src={photoUrl || data.receipt_attachment} alt="Receipt attachment"
                     className="w-full max-h-80 object-contain rounded-xl border border-slate-200 bg-slate-50" />
                 ) : (
                   <div className="rounded-xl bg-slate-50 border border-slate-200 px-4 py-6 text-center text-sm text-slate-400">

@@ -2,16 +2,19 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\GeneratesInternalReference;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 /**
  * Searchable, auditable photo evidence attached to a bill / task / visit /
  * valuation. Photo reference is system-generated (PHOTO-YYYY-#####); Property ID
- * is always the LITAS identifier and is never generated.
+ * is always the source-system identifier and is never generated.
  */
 class EvidencePhoto extends Model
 {
+    use GeneratesInternalReference;
+
     public const TYPES = [
         'PROPERTY_FULL_VIEW',
         'BILL_DELIVERY',
@@ -54,21 +57,20 @@ class EvidencePhoto extends Model
     protected static function booted(): void
     {
         static::creating(function (EvidencePhoto $photo) {
-            if (empty($photo->photo_reference)) {
-                $photo->photo_reference = self::nextReference();
-            }
             if (empty($photo->uploaded_at)) {
                 $photo->uploaded_at = now();
             }
         });
     }
 
-    public static function nextReference(): string
+    public static function referencePrefix(): string
     {
-        $year = date('Y');
-        $last = self::where('photo_reference', 'like', "PHOTO-{$year}-%")->max('id');
+        return 'PHOTO';
+    }
 
-        return sprintf('PHOTO-%s-%05d', $year, ($last ?: 0) + 1);
+    public static function referenceField(): string
+    {
+        return 'photo_reference';
     }
 
     public function bill(): BelongsTo

@@ -30,13 +30,28 @@ export default function Overview() {
   useEffect(() => {
     const fetchBoth = async () => {
       try {
-        const [t, s] = await Promise.all([
-          api.get('/tasks', { params: { view: 'mine', per_page: 200 } }),
+        const [taskData, s] = await Promise.all([
+          (async () => {
+            let page = 1
+            let lastPage = 1
+            const all = []
+            do {
+              const response = await api.get('/tasks', {
+                params: { workspace: 'enforcement', view: 'team', per_page: 200, page },
+              })
+              const result = unwrap(response).data
+              all.push(...(result.data || []))
+              lastPage = result.last_page || 1
+              page += 1
+            } while (page <= lastPage)
+
+            return { data: all }
+          })(),
           can('discovery.view', 'discovery.review')
             ? api.get('/discoveries/stats').catch(() => null)
             : Promise.resolve(null),
         ])
-        if (t) setTasks(unwrap(t).data)
+        setTasks(taskData)
         if (s) setStats(unwrap(s).data)
       } catch (ex) {
         setErr(errMsg(ex))
@@ -48,7 +63,7 @@ export default function Overview() {
 
   const list = tasks?.data || []
   const active = list.filter((t) => !COMPLETED.includes(t.status))
-  const overdue = list.filter((t) => !COMPLETED.includes(t.status) && t.due_date && String(t.due_date).slice(0, 10) < new Date().toISOString().slice(0, 10))
+  const overdue = list.filter((t) => t.deadline_status?.is_overdue)
   const escalated = list.filter((t) => t.status === 'Escalated')
   const collected = list.filter((t) => t.bill?.payment_status === 'Paid')
     .reduce((s, t) => s + Number(t.bill?.total_tax_due || 0), 0)
@@ -80,7 +95,7 @@ export default function Overview() {
 
       {/* Stat cards */}
       <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <Stat label="My tasks" value={list.length} tone="navy" icon="📋" />
+        <Stat label="Team tasks" value={list.length} tone="navy" icon="📋" />
         <Stat label="Active" value={active.length} tone="blue" icon="🔄" />
         <Stat label="Overdue" value={overdue.length} tone="amber" icon="⏰" />
         <Stat label="Escalated" value={escalated.length} tone="red" icon="🚨" />
@@ -120,15 +135,15 @@ export default function Overview() {
       {stats && (
         <Card title="Discovery pipeline">
           <div className="flex flex-wrap gap-4">
-            {['awaiting_review', 'sent_to_account', 'requiring_valuation', 'under_valuation', 'pending_ac', 'processed_in_litas', 'completed'].map((k) => {
+            {['awaiting_review', 'awaiting_acct_review', 'awaiting_valuation', 'under_valuation', 'awaiting_ac', 'registered', 'completed'].map((k) => {
               const label = {
-                awaiting_review: 'Awaiting review', sent_to_account: 'Sent to account',
-                requiring_valuation: 'Requiring valuation', under_valuation: 'Under valuation',
-                pending_ac: 'Pending AC approval', processed_in_litas: 'Processed in LITAS', completed: 'Completed',
+                awaiting_review: 'Awaiting review', awaiting_acct_review: 'Awaiting A&R review',
+                awaiting_valuation: 'Requiring valuation', under_valuation: 'Under valuation',
+                awaiting_ac: 'Pending AC approval', registered: 'Registered', completed: 'Completed',
               }[k]
               return (
                 <div key={k} className="flex-1 min-w-[120px] text-center">
-                  <div className={`text-2xl font-bold ${k === 'completed' ? 'text-emerald-600' : k.includes('processing') || k === 'processed_in_litas' ? 'text-navy-800' : 'text-amber-600'}`}>
+                  <div className={`text-2xl font-bold ${k === 'completed' ? 'text-emerald-600' : k.includes('processing') || k === 'registered' ? 'text-navy-800' : 'text-amber-600'}`}>
                     {stats[k] ?? 0}
                   </div>
                   <div className="text-[11px] uppercase tracking-wider text-slate-400 font-semibold">{label}</div>

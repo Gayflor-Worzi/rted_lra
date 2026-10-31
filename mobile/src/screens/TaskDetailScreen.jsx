@@ -3,6 +3,7 @@ import { View, Text, TouchableOpacity, StyleSheet, Alert, ActivityIndicator, Ref
 import { useFocusEffect } from '@react-navigation/native'
 import api from '../api'
 import { useAuth } from '../auth'
+import { useSync } from '../sync'
 import { can, hasAny, serverMessage, isOnlineRejection } from '../rbac'
 import { theme } from '../theme'
 import { Screen, Card, Badge, InfoRow, Btn, Empty, Field, Input, ChipRow } from '../components'
@@ -31,6 +32,7 @@ const ENG = {
 
 export default function TaskDetailScreen({ navigation, route }) {
   const { user } = useAuth()
+  const { queueAndFlush } = useSync()
   const { taskId, assignment } = route.params || {}
   const [detail, setDetail] = useState(null)
   const [err, setErr] = useState('')
@@ -104,15 +106,24 @@ export default function TaskDetailScreen({ navigation, route }) {
       { text: 'Cancel', style: 'cancel' },
       { text: 'Escalate', style: 'destructive', onPress: async () => {
         setBusy('escalate')
+        const payload = {
+          assignment_id: taskId,
+          action: 'escalate',
+          visit_date: new Date().toISOString().slice(0, 10),
+          notes: 'Escalated from the field app.',
+        }
         try {
-          await api.post(`/enforcement-assignments/${taskId}/action`, { action: 'escalate', notes: 'Escalated from the field app.' })
+          await api.post(`/enforcement-assignments/${taskId}/action`, payload)
           Alert.alert('Escalated', 'Assignment returned for review.')
           load()
         } catch (e) {
-          if (!isOnlineRejection(e)) {
+          if (isOnlineRejection(e)) {
+            Alert.alert('Escalation failed', serverMessage(e, 'Could not escalate.'))
+          } else {
+            await queueAndFlush('action', payload)
             Alert.alert('Saved offline', 'Escalation is queued and will sync when online.')
             load()
-          } else Alert.alert('Escalation failed', serverMessage(e, 'Could not escalate.'))
+          }
         } finally { setBusy('') }
       } },
     ])
@@ -265,7 +276,7 @@ export default function TaskDetailScreen({ navigation, route }) {
                   <InfoRow label="Amount" value={fm(p.amount)} bold />
                   <InfoRow label="Period" value={p.payment_period || '—'} />
                   {p.receipt_number ? <InfoRow label="Receipt #" value={p.receipt_number} /> : null}
-                  {p.litas_reference ? <InfoRow label="LITAS ref" value={p.litas_reference} /> : null}
+                  {p.source_reference ? <InfoRow label="Source ref" value={p.source_reference} /> : null}
                   <Text style={s.engMeta}>{p.verified_by || '—'} · {p.verified_at ? new Date(p.verified_at).toLocaleString() : ''}</Text>
                 </View>
               ))}

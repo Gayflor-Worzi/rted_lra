@@ -1,24 +1,52 @@
-import { createContext, useContext, useEffect, useState, useCallback } from 'react'
+import { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react'
 import NetInfo from '@react-native-community/netinfo'
 import api from './api'
 import {
   getDb,
+  outboxById,
+  outboxAll,
   outboxUnsolved,
   outboxStatusCounts,
   outboxMarkSyncing,
+  outboxMarkPending,
   outboxMarkSynced,
   outboxMarkFailed,
   outboxPruneSynced,
   enqueue,
+  enqueueDependent,
+  kvGet,
+  kvSet,
 } from './db'
+import { hasSyncIdentity } from './outboxStore.mjs'
+import { useAuth } from './auth'
 
 const SyncCtx = createContext(null)
+
+// Module-level re-entry lock. React state (`syncing`) lags a beat behind the
+// actual loop, so two rapid processOutbox calls could otherwise both pass the
+// `if (syncing) return` guard and interleave. Combined with the serialized DB
+// mutex in db.js this guarantees a single outbox flush at a time.
+let flushing = false
 
 const KIND_URL = {
   visit: () => '/enforcement-visits',
   discovery: () => '/discoveries',
   receipt: () => '/enforcement/submit-receipt',
   action: (payload) => `/enforcement-assignments/${payload.assignment_id}/action`,
+  evidence: () => '/evidence/photos',
+  gps_certify: () => '/gps/certify',
+}
+
+// Rows stuck mid-flush for longer than this (a crash right after a row was
+// marked syncing, before its response could be written) are treated as
+// never-sent and revived instead of being skipped forever.
+const STALE_SYNCING_MS = 5 * 60 * 1000
+
+function syncingIsStale(updatedAt) {
+  if (!updatedAt) return true
+  const t = Date.parse(String(updatedAt).replace(' ', 'T') + (String(updatedAt).endsWith('Z') ? '' : 'Z'))
+  if (Number.isNaN(t)) return true
+  return Date.now() - t > STALE_SYNCING_MS
 }
 
 /**
@@ -27,29 +55,63 @@ const KIND_URL = {
  * Failed rows are kept locally with attempts + last_error so retries are
  * possible and data is never silently lost.
  */
-async function attemptRow(row) {
+async function attemptRow(row, ownerUserId, authToken, isCurrentSession) {
+  if (String(row.owner_user_id) !== String(ownerUserId)) {
+    return { ok: false, offline: false, message: 'Submission belongs to a different account and was not sent.' }
+  }
+  if (!isCurrentSession()) {
+    return { ok: false, offline: false, message: 'Account changed; submission was not sent.' }
+  }
+
   let payload = {}
   try {
     payload = JSON.parse(row.payload)
   } catch {}
 
+  // Children (evidence photos) must wait for their parent's server id. Defer
+  // without touching retry counts — the next flush resolves the parent first.
+  if (row.parent_transaction_id) {
+    const serverId = await kvGet(`svc:${ownerUserId}:${row.parent_transaction_id}`)
+    if (!serverId) {
+      await outboxMarkPending(row.id, ownerUserId)
+      return { ok: true, deferred: true }
+    }
+    payload[payload._parent_field || 'discovery_id'] = Number(serverId)
+    delete payload._parent_field
+  }
+
   const attempts = (row.attempts || 0) + 1
-  await outboxMarkSyncing(row.id, attempts)
+  if (!(await outboxMarkSyncing(row.id, attempts, ownerUserId))) {
+    return { ok: false, offline: false, message: 'Submission is no longer available for this account.' }
+  }
+  if (!isCurrentSession()) {
+    await outboxMarkPending(row.id, ownerUserId)
+    return { ok: false, offline: false, message: 'Account changed; submission was not sent.' }
+  }
 
   const url = KIND_URL[row.kind] ? KIND_URL[row.kind](payload) : null
   if (!url) {
-    await outboxMarkFailed(row.id, `Unknown sync kind: ${row.kind}`)
-    return { ok: false, offline: true, message: `Unknown sync kind: ${row.kind}` }
+    await outboxMarkFailed(row.id, `Unknown sync kind: ${row.kind}`, ownerUserId)
+    // Terminal for this row, but NOT a transport failure — the queue must keep
+    // flushing so a single unrecognized kind can never stall later records.
+    return { ok: false, offline: false, message: `Unknown sync kind: ${row.kind}` }
   }
 
   try {
-    await api.post(url, payload)
-    await outboxMarkSynced(row.id)
+    const res = await api.post(url, payload, {
+      headers: { Authorization: `Bearer ${authToken}` },
+      authUserId: ownerUserId,
+    })
+    const serverId = res?.data?.data?.id
+    if (row.kind === 'discovery' && serverId) {
+      await kvSet(`svc:${ownerUserId}:${row.local_transaction_id}`, String(serverId))
+    }
+    await outboxMarkSynced(row.id, ownerUserId)
     return { ok: true }
   } catch (err) {
     const message = err?.response?.data?.message || err?.message || 'Sync failed'
     const status = err?.response?.status
-    await outboxMarkFailed(row.id, message)
+    await outboxMarkFailed(row.id, message, ownerUserId)
     // A server rejection (validation/business rule) is terminal for this row but
     // the rest of the queue should still flush. A transport failure means the
     // device is offline — stop the loop rather than hammering the network.
@@ -58,70 +120,161 @@ async function attemptRow(row) {
 }
 
 export function SyncProvider({ children }) {
-  const [counts, setCounts] = useState({ pending: 0, syncing: 0, synced: 0, failed: 0, total: 0 })
+  const { user, token, sessionValidated, sessionVersion, isSessionCurrent, validateSession } = useAuth()
+  const userId = user?.id == null ? null : String(user.id)
+  const sessionRef = useRef(null)
+  sessionRef.current = { userId, token, sessionVersion }
+  const [countsState, setCountsState] = useState({ userId: null, counts: { pending: 0, syncing: 0, synced: 0, failed: 0, total: 0 } })
   const [syncing, setSyncing] = useState(false)
 
   const refreshCounts = useCallback(async () => {
+    if (userId == null) {
+      setCountsState({ userId: null, counts: { pending: 0, syncing: 0, synced: 0, failed: 0, total: 0 } })
+      return
+    }
     await getDb()
-    setCounts(await outboxStatusCounts())
-  }, [])
-
-  useEffect(() => { refreshCounts(); outboxPruneSynced(7) }, [refreshCounts])
+    setCountsState({ userId, counts: await outboxStatusCounts(userId) })
+  }, [userId])
 
   useEffect(() => {
-    const unsub = NetInfo.addEventListener((state) => {
-      if (state.isConnected && !syncing) processOutbox({ quiet: true })
-    })
-    return unsub
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [syncing])
+    refreshCounts()
+    if (userId != null) outboxPruneSynced(userId, 7)
+  }, [refreshCounts, userId])
 
   const processOutbox = useCallback(async ({ quiet } = {}) => {
-    if (syncing) return
+    if (flushing) return
+    const accountId = userId
+    const accountToken = token
+    const accountVersion = sessionVersion
+    if (!hasSyncIdentity(accountId, accountToken)) {
+      return { ok: false, offline: false, message: 'An authenticated account is required to synchronize submissions.' }
+    }
+    const isCurrentSession = () => {
+      const current = sessionRef.current
+      return isSessionCurrent(accountId, accountToken, accountVersion)
+        && current?.userId === accountId
+        && current?.token === accountToken
+        && current?.sessionVersion === accountVersion
+    }
+    flushing = true
     setSyncing(true)
     let result = { ok: true }
     try {
-      const rows = await outboxUnsolved()
+      const network = await NetInfo.fetch()
+      if (network.isConnected !== true || network.isInternetReachable === false) {
+        return { ok: false, offline: true, message: 'Device is offline.' }
+      }
+      if (!sessionValidated && !(await validateSession())) {
+        return { ok: false, offline: false, message: 'Session could not be revalidated; queued records were not sent.' }
+      }
+      if (!isCurrentSession()) {
+        return { ok: false, offline: false, message: 'Account changed; queued records were not sent.' }
+      }
+      const rows = await outboxUnsolved(accountId)
       for (const row of rows) {
-        if (row.status === 'syncing') continue
-        const res = await attemptRow(row)
+        if (!isCurrentSession()) {
+          result = { ok: false, offline: false, message: 'Account changed; queued records were not sent.' }
+          break
+        }
+        if (row.status === 'syncing') {
+          if (!syncingIsStale(row.updated_at)) continue
+          // Marooned mid-flight (app/device died between marking syncing and the
+          // response). Revive so the next flush gives it another try.
+          await outboxMarkPending(row.id, accountId)
+        }
+        const res = await attemptRow(row, accountId, accountToken, isCurrentSession)
         if (!res.ok) {
           result = res
-          if (res.offline) break
+          if (res.offline || !isCurrentSession()) break
         }
       }
     } finally {
+      flushing = false
       setSyncing(false)
       await refreshCounts()
     }
     if (result.ok && !quiet) return { ok: true }
     return result
-  }, [syncing, refreshCounts])
+  }, [isSessionCurrent, refreshCounts, sessionValidated, sessionVersion, token, userId, validateSession])
+
+  useEffect(() => {
+    const unsub = NetInfo.addEventListener((state) => {
+      if (state.isConnected) processOutbox({ quiet: true })
+    })
+    return unsub
+  }, [processOutbox])
 
   /** Push a single row (per-record "Sync Now" / retry) without touching the rest. */
   const retryRow = useCallback(async (id) => {
-    const rows = await outboxUnsolved()
-    const row = rows.find((r) => r.id === id) || (await (await getDb()).getAllAsync('SELECT * FROM outbox WHERE id = ?', id))[0]
-    if (!row) { await refreshCounts(); return { ok: false, message: 'Record no longer queued.' } }
+    if (flushing) { await refreshCounts(); return { ok: false, message: 'Sync already in progress.' } }
+    const accountId = userId
+    const accountToken = token
+    const accountVersion = sessionVersion
+    if (!hasSyncIdentity(accountId, accountToken)) {
+      return { ok: false, message: 'An authenticated account is required to synchronize submissions.' }
+    }
+    const isCurrentSession = () => {
+      const current = sessionRef.current
+      return isSessionCurrent(accountId, accountToken, accountVersion)
+        && current?.userId === accountId
+        && current?.token === accountToken
+        && current?.sessionVersion === accountVersion
+    }
+    flushing = true
     setSyncing(true)
     try {
-      return await attemptRow(row)
+      const network = await NetInfo.fetch()
+      if (network.isConnected !== true || network.isInternetReachable === false) {
+        return { ok: false, offline: true, message: 'Device is offline.' }
+      }
+      if (!sessionValidated && !(await validateSession())) {
+        return { ok: false, offline: false, message: 'Session could not be revalidated; queued records were not sent.' }
+      }
+      if (!isCurrentSession()) return { ok: false, message: 'Account changed; queued record was not sent.' }
+      const row = await outboxById(id, accountId)
+      if (!row) return { ok: false, message: 'Record no longer queued.' }
+      return await attemptRow(row, accountId, accountToken, isCurrentSession)
     } finally {
+      flushing = false
       setSyncing(false)
       await refreshCounts()
     }
-  }, [refreshCounts])
+  }, [isSessionCurrent, refreshCounts, sessionValidated, sessionVersion, token, userId, validateSession])
 
   const queueAndFlush = async (kind, payload) => {
+    if (userId == null) throw new Error('Sign in before saving an offline submission.')
     await getDb()
-    await enqueue(kind, payload)
+    const localTransactionId = await enqueue(userId, kind, payload)
     await refreshCounts()
     const net = await NetInfo.fetch()
-    if (net.isConnected) await processOutbox({ quiet: true })
+    const syncResult = net.isConnected
+      ? await processOutbox({ quiet: true })
+      : { ok: false, offline: true }
+    const rows = await outboxAll(userId)
+    const row = rows.find((item) => item.local_transaction_id === localTransactionId)
+    return {
+      localTransactionId,
+      outboxId: row?.id ?? null,
+      status: row?.status ?? 'pending',
+      lastError: row?.last_error ?? null,
+      syncResult,
+    }
   }
 
+  const enqueueForUser = useCallback((kind, payload) => {
+    if (userId == null) throw new Error('Sign in before saving an offline submission.')
+    return enqueue(userId, kind, payload)
+  }, [userId])
+  const enqueueDependentForUser = useCallback((kind, payload, parentTransactionId) => {
+    if (userId == null) throw new Error('Sign in before saving an offline submission.')
+    return enqueueDependent(userId, kind, payload, parentTransactionId)
+  }, [userId])
+  const counts = countsState.userId === userId
+    ? countsState.counts
+    : { pending: 0, syncing: 0, synced: 0, failed: 0, total: 0 }
+
   return (
-    <SyncCtx.Provider value={{ counts, pending: counts.pending + counts.syncing + counts.failed, syncing, processOutbox, retryRow, queueAndFlush }}>
+    <SyncCtx.Provider value={{ counts, pending: counts.pending + counts.syncing + counts.failed, syncing, processOutbox, retryRow, queueAndFlush, enqueue: enqueueForUser, enqueueDependent: enqueueDependentForUser }}>
       {children}
     </SyncCtx.Provider>
   )

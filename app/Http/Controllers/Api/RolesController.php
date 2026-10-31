@@ -48,6 +48,13 @@ class RolesController extends Controller
             'default_scope' => ['required', Rule::in(['own', 'team', 'section', 'division', 'system'])],
         ]);
 
+        // Organization-wide data scopes are reserved to the System
+        // Administrator — a delegated RBAC editor must not mint a role that
+        // silently reads the entire register.
+        if (in_array($data['default_scope'], ['division', 'system'], true)) {
+            abort_unless($request->user()->isSystemAdministrator(), 403, 'Only a System Administrator may create a role with a division/platform-wide data scope.');
+        }
+
         $role = Role::create(array_merge($data, ['is_active' => true, 'is_system_role' => false]));
 
         $this->audit->record($role, 'role.created', $request->user()->id, [], [
@@ -114,6 +121,10 @@ class RolesController extends Controller
             'permissions' => ['array'],
             'permissions.*' => ['string', Rule::exists('permissions', 'name')],
         ]);
+
+        if (isset($data['default_scope']) && in_array($data['default_scope'], ['division', 'system'], true)) {
+            abort_unless($request->user()->isSystemAdministrator(), 403, 'Only a System Administrator may grant a role a division/platform-wide data scope.');
+        }
 
         $old = [
             'description' => $role->description,

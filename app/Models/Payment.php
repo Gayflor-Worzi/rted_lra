@@ -7,7 +7,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 /**
  * Verified payment records ONLY — never taxpayer claims.
- * Created when Account & Records confirms a payment against LITAS information.
+ * Created when Account & Records confirms a payment against source-system information.
  */
 class Payment extends Model
 {
@@ -17,7 +17,7 @@ class Payment extends Model
         'amount',
         'payment_period',
         'receipt_number',
-        'litas_reference',
+        'source_reference',
         'verified_by',
         'verified_at',
         'remarks',

@@ -13,9 +13,6 @@ function EditForm({ bill, onDone, onError }) {
     property_address: bill.property_address,
     property_classification: bill.property_classification || '',
     tax_period: bill.tax_period || '',
-    tax_amount: bill.tax_amount,
-    interest_charged: bill.interest_charged,
-    penalty_charged: bill.penalty_charged,
     remarks: bill.remarks || '',
   })
   const [busy, setBusy] = useState(false)
@@ -28,12 +25,7 @@ function EditForm({ bill, onDone, onError }) {
     e.preventDefault()
     setBusy(true)
     try {
-      await api.put(`/property-bills/${bill.id}`, {
-        ...form,
-        tax_amount: Number(form.tax_amount) || 0,
-        interest_charged: Number(form.interest_charged) || 0,
-        penalty_charged: Number(form.penalty_charged) || 0,
-      })
+      await api.put(`/property-bills/${bill.id}`, form)
       onDone()
     } catch (ex) { onError(errMsg(ex)) }
     setBusy(false)
@@ -51,16 +43,13 @@ function EditForm({ bill, onDone, onError }) {
         </select>
       </div>
       <FIELD_form label="Tax period" value={form.tax_period} onChange={set('tax_period')} />
-      <FIELD_form label="Tax amount (US$)" type="number" value={form.tax_amount} onChange={set('tax_amount')} />
-      <FIELD_form label="Interest (US$)" type="number" value={form.interest_charged} onChange={set('interest_charged')} />
-      <FIELD_form label="Penalty (US$)" type="number" value={form.penalty_charged} onChange={set('penalty_charged')} />
       <div className="sm:col-span-2">
         <label className="block text-xs font-semibold text-slate-600 mb-1.5">Remarks</label>
         <textarea className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm" rows={2} value={form.remarks} onChange={set('remarks')} />
       </div>
       <div className="sm:col-span-2">
         <Btn type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save changes'}</Btn>
-        <span className="ml-3 text-[11px] text-slate-400">Document # and Property ID originate from the source tax system and cannot be edited here.</span>
+        <span className="ml-3 text-[11px] text-slate-400">Document #, Property ID and tax amounts originate from the source tax system. Tax / interest / penalty amounts are changed through the Amendment action below, never here.</span>
       </div>
     </form>
   )
@@ -86,6 +75,7 @@ export default function BillDetail() {
   const { can } = useAuth()
   const [bill, setBill] = useState(null)
   const [err, setErr] = useState(null)
+  const [saveErr, setSaveErr] = useState(null)
   const [notice, setNotice] = useState('')
 
   const load = () => api.get(`/property-bills/${id}`).then((r) => setBill(unwrap(r).data)).catch((e) => {
@@ -94,12 +84,19 @@ export default function BillDetail() {
   })
 
   const refresh = async () => { await load(); setNotice('') }
-  const onError = (m) => setErr({ message: m })
+  const retry = async () => { setErr(null); await load() }
 
   useEffect(() => { load() }, [id]) // eslint-disable-line
 
-  if (err) return <ErrorBox error={{ message: err.message || 'Unable to load bill.' }} />
-  if (!bill) return <Spinner label="Loading bill…" />
+  if (!bill && !err) return <Spinner label="Loading bill…" />
+  // Load failed and there is no prior content to fall back on.
+  if (!bill) return (
+    <div className="space-y-4">
+      <PageTitle right={<Link to="/bills"><Btn tone="white">← Register</Btn></Link>}>Bill {id}</PageTitle>
+      <ErrorBox error={{ message: err.message || 'Unable to load bill.' }} />
+      <Btn tone="white" onClick={retry}>⟳ Retry</Btn>
+    </div>
+  )
 
   return (
     <div className="space-y-5">
@@ -109,15 +106,28 @@ export default function BillDetail() {
         Bill {bill.document_number}
       </PageTitle>
 
+      {/* Stale refresh failure — keep the loaded content visible, offer retry. */}
+      {err && (
+        <div className="flex items-center gap-2">
+          <div className="flex-1"><ErrorBox error={{ message: err.message || 'Unable to refresh the bill.' }} /></div>
+          <Btn tone="white" onClick={retry}>⟳ Retry</Btn>
+        </div>
+      )}
+
       {notice && <SuccessBox>{notice}</SuccessBox>}
-      <ErrorBox error={err?.response ? { message: errMsg(err) } : null} />
 
       {/* The unified task + property/bill workspace (same component as the drawer). */}
       <BillDrawer billId={bill.id} embedded onChanged={load} />
 
       {can('bills.edit') && (
-        <Card title="Edit bill (totals recompute automatically)">
-          <EditForm bill={bill} onDone={() => { refresh(); setNotice('Bill updated.') }} onError={onError} />
+        <Card title="Edit bill details">
+          {saveErr && (
+            <div className="flex items-center gap-2 mb-3">
+              <div className="flex-1"><ErrorBox error={{ message: saveErr }} /></div>
+              <Btn tone="white" onClick={() => setSaveErr(null)}>Dismiss</Btn>
+            </div>
+          )}
+          <EditForm bill={bill} onDone={() => { refresh(); setSaveErr(null); setNotice('Bill updated.') }} onError={setSaveErr} />
         </Card>
       )}
     </div>

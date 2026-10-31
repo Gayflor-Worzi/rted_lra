@@ -117,11 +117,21 @@ class NotificationsController extends Controller
     }
 
     /* ------------------------------------------------------------------ */
-    /*  Detail + action resolution                                         */
+    /*  Detail + action resolution */
     /* ------------------------------------------------------------------ */
 
     private function presentDetail(User $user, Notification $n): array
     {
+        if ($n->type === Notification::TYPE_ORGANIZATION) {
+            return [
+                'kind' => 'organization',
+                'link' => $n->action_url ?: '/enforcement?tab=organization',
+                'ref' => 'Team management',
+                'fields' => [],
+                'actions' => [],
+            ];
+        }
+
         $related = $this->resolveRelated($n);
 
         return match (true) {

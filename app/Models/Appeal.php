@@ -2,11 +2,14 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\GeneratesInternalReference;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class Appeal extends Model
 {
+    use GeneratesInternalReference;
+
     protected $fillable = [
         'appeal_reference',
         'bill_id',
@@ -32,15 +35,20 @@ class Appeal extends Model
     protected static function booted(): void
     {
         static::creating(function (Appeal $appeal) {
-            if (empty($appeal->appeal_reference)) {
-                $year = date('Y');
-                $last = self::where('appeal_reference', 'like', "APP-{$year}-%")->max('id');
-                $appeal->appeal_reference = sprintf('APP-%s-%05d', $year, ($last ?: 0) + 1);
-            }
             if (empty($appeal->status)) {
                 $appeal->status = 'Submitted';
             }
         });
+    }
+
+    public static function referencePrefix(): string
+    {
+        return 'APP';
+    }
+
+    public static function referenceField(): string
+    {
+        return 'appeal_reference';
     }
 
     public function bill(): BelongsTo

@@ -40,6 +40,20 @@ export const statusBadge = (status) => {
     submitted: { bg: '#EFF6FF', fg: '#2563EB' },
     approved: { bg: '#E7F6EC', fg: '#16A34A' },
     rejected: { bg: '#FEE2E2', fg: '#DC2626' },
+    'assessment in progress': { bg: '#FFF7ED', fg: '#D97706' },
+    'awaiting review': { bg: '#EFF6FF', fg: '#2563EB' },
+    'submitted to manager': { bg: '#EFF6FF', fg: '#2563EB' },
+    'under manager review': { bg: '#DBEAFE', fg: '#1D4ED8' },
+    'awaiting ac': { bg: '#FEF3C7', fg: '#D97706' },
+    'submitted to ac': { bg: '#FEF3C7', fg: '#D97706' },
+    'awaiting ac approval': { bg: '#FEF3C7', fg: '#D97706' },
+    'ac approved': { bg: '#E7F6EC', fg: '#16A34A' },
+    'returned for correction': { bg: '#FFF7ED', fg: '#D97706' },
+    'ac returned': { bg: '#FFF7ED', fg: '#D97706' },
+    'ac rejected': { bg: '#FEE2E2', fg: '#DC2626' },
+    'awaiting account & record': { bg: '#EFF6FF', fg: '#2563EB' },
+    'sent to account & record': { bg: '#EFF6FF', fg: '#2563EB' },
+    registered: { bg: '#E8ECF5', fg: '#002060' },
   }
   return map[status?.toLowerCase?.()] || { bg: '#F1F5F9', fg: '#475569' }
 }

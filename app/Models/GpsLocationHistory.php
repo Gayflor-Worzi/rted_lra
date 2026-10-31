@@ -26,6 +26,7 @@ class GpsLocationHistory extends Model
         'verification_status',
         'certification_decision',
         'remarks',
+        'review_remarks',
         'captured_by',
         'certified_by',
         'reviewed_by',

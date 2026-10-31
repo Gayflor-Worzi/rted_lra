@@ -8,6 +8,21 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class Notification extends Model
 {
+    /** Assignment alerts for the Account & Record "My Tasks" module. */
+    public const TYPE_ACCOUNT_TASKS = 'account_tasks';
+
+    /** Assignment alerts for the Assistant Commissioner workspace. */
+    public const TYPE_AC_TASKS = 'ac_tasks';
+
+    /** Assignment alerts for the Valuation workspace. */
+    public const TYPE_VALUATION_TASKS = 'valuation_tasks';
+
+    /** Generic assignment alerts (enforcement field queue). */
+    public const TYPE_TASKS = 'tasks';
+
+    /** Enforcement organization recommendation and decision notices. */
+    public const TYPE_ORGANIZATION = 'organization';
+
     protected $fillable = [
         'user_id',
         'title',

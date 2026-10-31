@@ -50,7 +50,7 @@ return new class extends Migration
             $table->index('actor_id');
         });
 
-        // Polymorphic attachments (receipts, LITAS bill, property photos, evidence)
+        // Polymorphic attachments (receipts, source-system bill, property photos, evidence)
         Schema::create('attachments', function (Blueprint $table) {
             $table->id();
             $table->unsignedBigInteger('uploaded_by')->nullable();

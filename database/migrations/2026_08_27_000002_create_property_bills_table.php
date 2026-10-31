@@ -7,15 +7,15 @@ use Illuminate\Support\Facades\Schema;
 return new class extends Migration
 {
     /**
-     * RETD Bill Register — a log of LITAS-generated bills, NOT a master SSOT.
-     * Document # and Property ID are LITAS identifiers; this system never generates them.
+     * RETD Bill Register — a log of source-system-generated bills, NOT a master SSOT.
+     * Document # and Property ID are source-system identifiers; this system never generates them.
      */
     public function up(): void
     {
         Schema::create('property_bills', function (Blueprint $table) {
             $table->id();
-            $table->string('document_number')->unique()->index(); // LITAS Document #
-            $table->string('property_id')->index();               // LITAS Property ID
+            $table->string('document_number')->unique()->index(); // Source-system Document #
+            $table->string('property_id')->index();               // Source-system Property ID
             $table->string('taxpayer_name');
             $table->string('tin', 40)->nullable()->index();
             $table->string('property_classification')->nullable();

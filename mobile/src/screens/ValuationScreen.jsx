@@ -3,11 +3,12 @@ import { View, Text, TextInput, StyleSheet, ScrollView, Alert, TouchableOpacity,
 import { useFocusEffect } from '@react-navigation/native'
 import api from '../api'
 import { useAuth } from '../auth'
+import { fetchOfflineRead } from '../offline'
 import { can, serverMessage } from '../rbac'
 import { theme } from '../theme'
-import { BrandHeader, Card, Badge, Empty } from '../components'
+import { BrandHeader, Card, Badge, Empty, OfflineReadStatus } from '../components'
 
-const STATUSES = ['Draft', 'Submitted', 'Manager Review', 'AC Approval', 'Approved', 'Rejected', 'Returned']
+const STATUSES = ['Assigned', 'Assessment in Progress', 'Awaiting Review', 'Awaiting AC', 'Awaiting Account & Record', 'Returned for Correction', 'Completed']
 
 const fd = (v) => (v ? String(v).slice(0, 10) : '—')
 const fmMoney = (v) => {
@@ -16,7 +17,7 @@ const fmMoney = (v) => {
 }
 
 export default function ValuationScreen({ navigation }) {
-  const { user } = useAuth()
+  const { user, canUseOfflineCache } = useAuth()
   const { width } = useWindowDimensions()
   const canCreate = can(user, 'valuation.create')
   const canView = can(user, 'valuation.view_history') || can(user, 'valuation.review')
@@ -26,6 +27,9 @@ export default function ValuationScreen({ navigation }) {
   const [err, setErr] = useState('')
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState('All')
+  const [readStatus, setReadStatus] = useState(null)
+  const [syncedAt, setSyncedAt] = useState(null)
+  const [cacheError, setCacheError] = useState(null)
 
   const loadList = useCallback(async (show = true) => {
     if (show) setRefreshing(true)
@@ -33,15 +37,34 @@ export default function ValuationScreen({ navigation }) {
       const params = { per_page: 50 }
       if (status !== 'All') params.status = status
       if (query.trim()) params.q = query.trim()
-      const r = await api.get('/valuations', { params })
-      setList(r.data.data?.data || r.data.data || [])
-      setErr('')
+      const result = await fetchOfflineRead({
+        module: 'valuations',
+        cacheKey: `${user?.role}:status:${status}:query:${query.trim().toLowerCase()}`,
+        user,
+        allowCache: canUseOfflineCache,
+        request: () => api.get('/valuations', { params }),
+        select: (response) => response.data?.data?.data || response.data?.data || [],
+        cacheSelect: (records) => Array.isArray(records)
+          ? records.filter((record) => String(record?.valuation_officer_id) === String(user.id))
+          : [],
+      })
+      if (result.status === 'expired') {
+        setList([])
+        setErr('Offline valuation data has expired. Connect to refresh.')
+      } else {
+        setList(result.data)
+        setErr('')
+      }
+      setReadStatus(result.status)
+      setSyncedAt(result.syncedAt)
+      setCacheError(result.cacheError || null)
     } catch (e) {
       setErr(serverMessage(e, 'Could not load valuations.'))
       setList([])
+      setReadStatus(null)
     }
     if (show) setRefreshing(false)
-  }, [status, query])
+  }, [status, query, user, canUseOfflineCache])
 
   useFocusEffect(useCallback(() => { loadList(false) }, [loadList]))
 
@@ -59,6 +82,7 @@ export default function ValuationScreen({ navigation }) {
   return (
     <View style={s.container}>
       <BrandHeader title="Valuations" subtitle={list == null ? 'Loading…' : `${list.length} assigned record(s)`} />
+      <OfflineReadStatus status={readStatus} syncedAt={syncedAt} cacheError={cacheError} />
 
       <ScrollView
         contentContainerStyle={{ paddingBottom: 140, width: '100%', maxWidth: 800, alignSelf: 'center' }}

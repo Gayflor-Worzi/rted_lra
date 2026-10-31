@@ -6,7 +6,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 /**
- * Current official (verified) property location — one row per LITAS Property ID.
+ * Current official (verified) property location — one row per Property ID.
  * Never auto-populated from a visit capture; only written through explicit GPS
  * certification (gps.update) or an approved gps.approve decision.
  */

@@ -90,14 +90,17 @@ export const DELIVERY_STATUSES = [
   'Out for Delivery',
   'Delivered',
   'Returned',
+  'Undelivered',
+  'Not Mailable',
   'Filed',
 ]
 
 // Bill delivery outcome captured during a field visit.
 export const BILL_DELIVERY_STATUSES = [
+  'Out for Delivery',
   'Delivered',
+  'Returned',
   'Undelivered',
-  'Returned to Office',
   'Not Mailable',
 ]
 
@@ -158,27 +161,25 @@ export const CASE_STATUSES = [
   'Closed',
 ]
 
-// New Property Discovery — first-class workflow statuses (mirror of
-// PropertyDiscovery::STATUSES). Classification selects Path A (account) or
-// Path V (valuation); LITAS identifiers are recorded, never generated.
+// New Property Discovery — controlled workflow statuses (mirror of
+// PropertyDiscovery::STATUSES). Auto-classifies on submit to Path A or V;
+// Source-system identifiers are recorded, never generated.
 export const DISCOVERY_STATUSES = [
-  'DISCOVERED',
-  'SUBMITTED',
-  'UNDER_MANAGER_REVIEW',
-  'CLASSIFIED',
-  'SENT_TO_ACCOUNT',
-  'VALUATION_REQUIRED',
-  'VALUATION_ASSIGNED',
-  'UNDER_VALUATION',
-  'VALUATION_MANAGER_REVIEW',
-  'PENDING_AC_APPROVAL',
-  'AC_APPROVED',
-  'AC_REJECTED',
-  'RETURNED_FOR_CORRECTION',
-  'RESUBMITTED',
-  'SENT_TO_ACCOUNT_MANAGER',
-  'PROCESSED_IN_LITAS',
-  'COMPLETED',
+  'Draft',
+  'Submitted',
+  'Classified',
+  'Awaiting Account Manager Review',
+  'Awaiting Valuation',
+  'Under Valuation',
+  'Awaiting AC Approval',
+  'Approved',
+  'Returned for Correction',
+  'Assigned to Account & Record',
+  'Referred to Valuation',
+  'Registered',
+  'Completed',
+  'Rejected',
+  'Closed',
 ]
 
 export const DISCOVERY_PATHS = [
@@ -186,31 +187,90 @@ export const DISCOVERY_PATHS = [
   { value: 'valuation', label: 'Path V — Valuation' },
 ]
 
+// System-wide Value Declaration vocabulary (§2) — the three controlled values.
+export const VALUE_DECLARATION_TYPES = [
+  { value: 'SELF_DECLARED', label: 'Self Declared', tone: 'green', hint: 'Owner-declared value — goes to the Account & Record Manager.' },
+  { value: 'DOCUMENTARY_VALUE', label: 'Value from Documentation', tone: 'blue', hint: 'Value from deed/documents — Account & Record Manager with document review.' },
+  { value: 'VALUATION_VALUE', label: 'Valuation', tone: 'amber', hint: 'Formal valuation required — routed to the Valuation Manager. You cannot enter a value.' },
+]
+
+export const valueDeclarationInfo = (v) =>
+  VALUE_DECLARATION_TYPES.find((t) => t.value === v) || { value: v, label: v || 'Not declared', tone: 'slate', hint: '' }
+
 export const DISCOVERY_ROUTE_LABEL = {
   account: 'Path A · Account & Records',
   valuation: 'Path V · Valuation',
 }
 
-// Display label + tone for each discovery status.
+// Display label + tone for each discovery status (keys match backend human-readable values).
 export const discoveryStatusInfo = (s) => ({
-  DISCOVERED: { label: 'Discovered', tone: 'slate' },
-  SUBMITTED: { label: 'Submitted', tone: 'blue' },
-  UNDER_MANAGER_REVIEW: { label: 'Under Review', tone: 'amber' },
-  CLASSIFIED: { label: 'Classified', tone: 'navy' },
-  SENT_TO_ACCOUNT: { label: 'Sent to Account', tone: 'blue' },
-  VALUATION_REQUIRED: { label: 'Valuation Required', tone: 'navy' },
-  VALUATION_ASSIGNED: { label: 'Valuation Assigned', tone: 'blue' },
-  UNDER_VALUATION: { label: 'Under Valuation', tone: 'amber' },
-  VALUATION_MANAGER_REVIEW: { label: 'Valuation Review', tone: 'amber' },
-  PENDING_AC_APPROVAL: { label: 'Pending AC Approval', tone: 'amber' },
-  AC_APPROVED: { label: 'AC Approved', tone: 'green' },
-  AC_REJECTED: { label: 'AC Rejected', tone: 'red' },
-  RETURNED_FOR_CORRECTION: { label: 'Returned for Correction', tone: 'red' },
-  RESUBMITTED: { label: 'Resubmitted', tone: 'blue' },
-  SENT_TO_ACCOUNT_MANAGER: { label: 'Sent to Account Manager', tone: 'blue' },
-  PROCESSED_IN_LITAS: { label: 'Processed in LITAS', tone: 'navy' },
-  COMPLETED: { label: 'Completed', tone: 'green' },
+  'Draft':                                  { label: 'Draft',                             tone: 'slate' },
+  'Submitted':                              { label: 'Submitted',                         tone: 'blue' },
+  'Classified':                             { label: 'Classified',                        tone: 'navy' },
+  'Awaiting Account Manager Review':       { label: 'Awaiting A&R Review',               tone: 'amber' },
+  'Awaiting Valuation':                     { label: 'Awaiting Valuation',                tone: 'amber' },
+  'Under Valuation':                        { label: 'Under Valuation',                   tone: 'blue' },
+  'Awaiting AC Approval':                   { label: 'Awaiting AC Approval',              tone: 'amber' },
+  'Approved':                               { label: 'Approved',                          tone: 'green' },
+  'Returned for Correction':                { label: 'Returned for Correction',           tone: 'red' },
+  'Assigned to Account & Record':            { label: 'Assigned to A&R — processing',     tone: 'blue' },
+  'Referred to Valuation':                  { label: 'Referred to Valuation',             tone: 'blue' },
+  'Registered':                     { label: 'Registered',                tone: 'navy' },
+  'Completed':                              { label: 'Completed',                         tone: 'green' },
+  'Rejected':                               { label: 'Rejected',                          tone: 'red' },
+  'Closed':                                 { label: 'Closed',                            tone: 'slate' },
 }[s] || { label: s, tone: 'slate' })
+
+// Valuation assessment statuses (mirror of Valuation::STATUSES).
+export const VALUATION_STATUSES = [
+  'Assigned',
+  'Assessment in Progress',
+  'Submitted to Manager',
+  'Under Manager Review',
+  'Returned for Correction',
+  'Submitted to AC',
+  'Awaiting AC Approval',
+  'AC Approved',
+  'AC Returned',
+  'AC Rejected',
+  'Sent to Account & Record',
+  'Registered',
+  'Completed',
+]
+
+// Display label + tone for valuation statuses.
+export const valuationStatusInfo = (s) => ({
+  'Assigned':                   { label: 'Assigned',                   tone: 'slate' },
+  'Assessment in Progress':     { label: 'In Progress',                tone: 'blue' },
+  'Submitted to Manager':       { label: 'Submitted to Manager',       tone: 'amber' },
+  'Under Manager Review':       { label: 'Under Manager Review',       tone: 'amber' },
+  'Returned for Correction':    { label: 'Returned for Correction',    tone: 'red' },
+  'Submitted to AC':            { label: 'Submitted to AC',            tone: 'blue' },
+  'Awaiting AC Approval':       { label: 'Awaiting AC Approval',       tone: 'amber' },
+  'AC Approved':                { label: 'AC Approved',                tone: 'green' },
+  'AC Returned':                { label: 'AC Returned',                tone: 'red' },
+  'AC Rejected':                { label: 'AC Rejected',                tone: 'red' },
+  'Sent to Account & Record':   { label: 'Sent to A&R',               tone: 'blue' },
+  'Registered':         { label: 'Registered',         tone: 'navy' },
+  'Completed':                  { label: 'Completed',                  tone: 'green' },
+}[s] || { label: s, tone: 'slate' })
+
+// The full valuation stage ladder for the workflow stepper (mirrors valuation statuses in order).
+export const VALUATION_LADDER = [
+  'Assigned',
+  'Assessment in Progress',
+  'Submitted to Manager',
+  'Under Manager Review',
+  'Returned for Correction',
+  'Submitted to AC',
+  'Awaiting AC Approval',
+  'AC Approved',
+  'AC Returned',
+  'AC Rejected',
+  'Sent to Account & Record',
+  'Registered',
+  'Completed',
+]
 
 // Staff Target metrics grouped by the staff function they belong to, with a
 // friendly label (mirror of StaffTarget::METRICS).

@@ -9,7 +9,7 @@ use Illuminate\Support\Facades\Schema;
  * GPS property-location tracking.
  *
  * gps_locations         — the CURRENT official (verified) property location,
- *                         one row per LITAS Property ID. Never auto-populated
+ *                         one row per Property ID. Never auto-populated
  *                         from a visit capture; only written through explicit
  *                         certification with the gps.update permission, or by
  *                         an approved gps.approve decision.
@@ -19,7 +19,7 @@ use Illuminate\Support\Facades\Schema;
  *
  * The captured visit/valuation/discovery coordinates continue to live on the
  * enforcement_visits / valuations / property_discoveries records themselves.
- * LITAS identifiers (Property ID / Document #) are referenced, never generated.
+ * Source-system identifiers (Property ID / Document #) are referenced, never generated.
  */
 return new class extends Migration
 {

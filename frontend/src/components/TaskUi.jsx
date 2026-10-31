@@ -247,7 +247,7 @@ export function SubmitReceiptModal({ task, onClose, onSaved }) {
               <T label="Amount paid (US$)" required><Input className="w-full" type="number" min="0" step="0.01" value={form.amount} onChange={set('amount')} required /></T>
               <T label="Tax period"><Input className="w-full" value={form.period} onChange={set('period')} /></T>
             </div>
-            <T label="Tax due year" required><Input className="w-full" type="number" min={2000} max={2100} placeholder="e.g. 2024" value={form.tax_due_date} onChange={set('tax_due_date')} required /></T>
+            <T label="Tax due date" required><Input className="w-full" type="date" value={form.tax_due_date} onChange={set('tax_due_date')} required /></T>
 
             <div>
               <label className="block text-xs font-semibold text-slate-600 mb-1.5">Receipt photo (capture or upload) <span className="text-red-500">*</span></label>
@@ -459,7 +459,7 @@ export function TaskLadder({ timeline }) {
 // Next-action button / chip (the single required action on the card)
 // ---------------------------------------------------------------------------
 export function TaskNextAction({ task, canVisit, busyId, onRecordVisit, onAdvance, onClaim }) {
-  const { can } = useAuth()
+  const { user, can } = useAuth()
   const na = task.next_action || {}
   const kind = na.kind
   const verb = na.verb || ''
@@ -500,7 +500,9 @@ export function TaskNextAction({ task, canVisit, busyId, onRecordVisit, onAdvanc
     if (/deliver/i.test(verb) && canVisit) {
       return <button onClick={() => onRecordVisit(task)} disabled={busyId === task.id} className="px-4 py-2 rounded-xl bg-brand-500 text-white hover:bg-brand-600 text-sm font-semibold transition">Record field delivery</button>
     }
-    if (/assign/i.test(verb) && can('tasks.assign', 'me.assign_walkin') && task.reference_id) {
+    const assignmentRoleAllowed = task.task_type !== 'Bill Delivery'
+      || ['Enforcement Manager', 'System Administrator'].includes(user?.role)
+    if (/assign/i.test(verb) && assignmentRoleAllowed && can('tasks.assign', 'me.assign_walkin') && task.reference_id) {
       return <Link to={`/bills/${task.reference_id}`} className="inline-flex items-center gap-2 rounded-xl bg-navy-50 text-navy-800 hover:bg-navy-100 px-4 py-2 text-sm font-semibold transition">Assign an officer →</Link>
     }
     if (canVisit) {

@@ -8,8 +8,10 @@ import { can } from '../rbac'
 import { theme } from '../theme'
 import { Field, Btn, ChipRow, Card, Empty } from '../components'
 
-const rowValue = (r) => (Number(r.amount) || 0) * (Number(r.quantity) || 0) * (1 - (Number(r.depreciation_pct) || 0) / 100)
-const emptyRow = () => ({ description: '', level: 'Ground Floor', area_sqft: '', tar: '', quantity: '1', amount: '', building_age: '', depreciation_pct: '' })
+import { LAND_LEVEL, descriptionInputIssues, isLandRow, rowAmount, rowDepreciationPct, rowValue, totalAssessedValue } from '../valuationRows'
+
+const emptyRow = (level) => ({ description: '', level, area_sqft: '', tar: '', quantity: '1', building_age: '' })
+const emptyLandRow = () => emptyRow(LAND_LEVEL)
 
 const PROPERTY_CLASSIFICATIONS = [
   'Residential', 'Commercial', 'Industrial', 'Unimproved Land',
@@ -19,8 +21,7 @@ const PROPERTY_CLASSIFICATIONS = [
 
 const LEVELS = ['Ground Floor', '1st Floor', '2nd Floor', '3rd Floor', 'Basement', 'Exterior', 'Other']
 
-const SUMMARY_FIELDS = ['level', 'area_sqft', 'tar', 'quantity', 'amount', 'building_age', 'depreciation_pct']
-const SUM_LABELS = { level: 'Level', area_sqft: 'Area (sq ft)', tar: 'TAR', quantity: 'Qty', amount: 'Amount (US$)', building_age: 'Age (yrs)', depreciation_pct: 'Depr. (%)' }
+const SUM_LABELS = { area_sqft: 'Area (sq ft)', tar: 'TAR', quantity: 'Qty', amount: 'Amount (US$)', building_age: 'Age (yrs)', depreciation_pct: 'Depr. (%)' }
 
 export default function NewValuationScreen({ navigation }) {
   const { user } = useAuth()
@@ -46,7 +47,7 @@ export default function NewValuationScreen({ navigation }) {
   const [docRef, setDocRef] = useState('')
   const [gps, setGps] = useState(null)
   const [locating, setLocating] = useState(false)
-  const [rows, setRows] = useState([emptyRow()])
+  const [rows, setRows] = useState([emptyLandRow()])
   const [photos, setPhotos] = useState([])
   const [busy, setBusy] = useState(false)
 
@@ -92,25 +93,32 @@ export default function NewValuationScreen({ navigation }) {
     if (!res.canceled) setPhotos([...photos, res.assets[0].uri])
   }
 
-  const total = rows.reduce((sum, r) => sum + rowValue(r), 0)
+  const total = totalAssessedValue(rows)
   const annualTax = (Number(reassessed) || 0) > 0 && (Number(taxRate) || 0) > 0
     ? (Number(reassessed) * (Number(taxRate) / 100)) + (Number(otherAmounts) || 0)
     : null
 
   const submit = async () => {
     if (!owner.trim() || !address.trim()) return Alert.alert('Missing fields', 'Owner name and property address are required.')
+
+    // Negative or malformed inputs are refused here; the server refuses to submit
+    // an incomplete Land row or an unpriced building row.
+    const issues = descriptionInputIssues(rows)
+    if (issues.length) return Alert.alert('Check the property description', issues[0])
+
     setBusy(true)
     const descriptions = rows
-      .filter((r) => r.description.trim() || Number(r.amount) > 0)
+      .filter((r) => isLandRow(r) || r.description.trim() || r.area_sqft.trim() || r.tar.trim() || r.building_age.trim())
       .map((r) => ({
         description: r.description.trim() || undefined,
         level: r.level.trim() || undefined,
         area_sqft: r.area_sqft.trim() ? Number(r.area_sqft) : undefined,
         tar: r.tar.trim() ? Number(r.tar) : undefined,
         quantity: Number(r.quantity) || 1,
-        amount: Number(r.amount) || undefined,
+        // Read-only on the form; the server recomputes both from the inputs above.
+        amount: rowAmount(r) ?? undefined,
         building_age: r.building_age.trim() ? Number(r.building_age) : undefined,
-        depreciation_pct: Number(r.depreciation_pct) || undefined,
+        depreciation_pct: rowDepreciationPct(r),
       }))
     try {
       const r = await api.post('/valuations', {
@@ -125,7 +133,7 @@ export default function NewValuationScreen({ navigation }) {
         property_classification: classification.trim() || undefined,
         land_dimensions: landDims.trim() || undefined,
         building_specs: buildingSpecs.trim() || undefined,
-        construction_year: constructionYear.trim() ? Number(constructionYear) : undefined,
+        construction_year: constructionYear.trim() || undefined,
         condition: condition.trim() || undefined,
         assessment_date: assessmentDate || undefined,
         declared_value: declaredValue.trim() ? Number(declaredValue) : undefined,
@@ -175,10 +183,10 @@ export default function NewValuationScreen({ navigation }) {
               <TextInput style={s.input} keyboardType="numeric" placeholder="Linked property bill id, e.g. 42" value={billRef} onChangeText={setBillRef} />
             </Field>
             <Field label="Property ID">
-              <TextInput style={s.input} placeholder="LITAS property id (from discovery / bill)" value={propertyRef} onChangeText={setPropertyRef} />
+              <TextInput style={s.input} placeholder="Property ID (from discovery / bill)" value={propertyRef} onChangeText={setPropertyRef} />
             </Field>
             <Field label="Document #">
-              <TextInput style={s.input} placeholder="LITAS document number" value={docRef} onChangeText={setDocRef} />
+              <TextInput style={s.input} placeholder="Document # (source)" value={docRef} onChangeText={setDocRef} />
             </Field>
 
             <Text style={s.label}>Taxpayer</Text>
@@ -227,58 +235,95 @@ export default function NewValuationScreen({ navigation }) {
             </Field>
 
             <Text style={s.label}>Property description & valuation sheet</Text>
-            {rows.map((r, i) => (
-              <View key={i} style={s.rowCard}>
-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                  <Text style={s.rowNo}>No. {i + 1}</Text>
-                  {rows.length > 1 && (
-                    <TouchableOpacity hitSlop={6} onPress={() => setRows(rows.filter((_, ix) => ix !== i))}
-                      style={{ paddingVertical: 6, paddingHorizontal: 8, minHeight: 36, justifyContent: 'center' }}>
-                      <Text style={{ color: theme.colors.danger, fontWeight: '700' }}>Remove</Text>
-                    </TouchableOpacity>
-                  )}
-                </View>
-                <TextInput style={s.input} placeholder="Property description (e.g. 3-bedroom house)" value={r.description} onChangeText={(v) => setRowAt(i, { description: v })} />
-                <View style={{ marginTop: 10 }}>
-                  <Text style={s.cellLabel}>Level</Text>
-                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
-                    {LEVELS.map((l) => {
-                      const active = r.level === l
-                      return (
-                        <TouchableOpacity key={l} onPress={() => setRowAt(i, { level: l })}
-                          hitSlop={3} style={[s.levelChip, active ? { backgroundColor: theme.colors.navy, borderColor: theme.colors.navy } : s.levelChipIdle]}>
-                          <Text style={[s.levelChipText, active ? { color: '#fff' } : { color: theme.colors.textMuted }]}>{l}</Text>
-                        </TouchableOpacity>
-                      )
-                    })}
+            {rows.map((r, i) => {
+              const land = isLandRow(r)
+              const amount = rowAmount(r)
+              const depreciation = rowDepreciationPct(r)
+              const assessed = rowValue(r)
+              const money = (n) => (n === null ? '—' : `US$ ${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)
+              return (
+                <View key={i} style={s.rowCard}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                    <Text style={s.rowNo}>No. {i + 1}{land ? ' · Land (mandatory)' : ''}</Text>
+                    {!land && (
+                      <TouchableOpacity hitSlop={6} onPress={() => setRows(rows.filter((_, ix) => ix !== i))}
+                        style={{ paddingVertical: 6, paddingHorizontal: 8, minHeight: 36, justifyContent: 'center' }}>
+                        <Text style={{ color: theme.colors.danger, fontWeight: '700' }}>Remove</Text>
+                      </TouchableOpacity>
+                    )}
                   </View>
-                </View>
-                <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
-                  {SUMMARY_FIELDS.filter((f) => f !== 'level').map((f) => (
-                    <View key={f} style={{ flex: 1 }}>
-                      <Text style={s.cellLabel}>{SUM_LABELS[f]}</Text>
-                      <TextInput
-                        style={[s.input, { paddingHorizontal: 8, paddingVertical: 9, fontSize: 13 }]}
-                        keyboardType="numeric"
-                        placeholder={f === 'amount' || f === 'depreciation_pct' ? '—' : f === 'tar' ? 'rate' : ''}
-                        value={r[f]}
-                        onChangeText={(v) => setRowAt(i, { [f]: v })}
-                      />
+                  <TextInput style={s.input} placeholder={land ? 'Property description (e.g. parcel on Johnsonville Road)' : 'Property description (e.g. 3-bedroom house)'} value={r.description} onChangeText={(v) => setRowAt(i, { description: v })} />
+                  <View style={{ marginTop: 10 }}>
+                    <Text style={s.cellLabel}>Level</Text>
+                    {land ? (
+                      <Text style={{ fontSize: 13, fontWeight: '700', color: theme.colors.navy }}>Land — first row, never depreciated</Text>
+                    ) : (
+                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+                        {LEVELS.map((l) => {
+                          const active = r.level === l
+                          return (
+                            <TouchableOpacity key={l} onPress={() => setRowAt(i, { level: l })}
+                              hitSlop={3} style={[s.levelChip, active ? { backgroundColor: theme.colors.navy, borderColor: theme.colors.navy } : s.levelChipIdle]}>
+                              <Text style={[s.levelChipText, active ? { color: '#fff' } : { color: theme.colors.textMuted }]}>{l}</Text>
+                            </TouchableOpacity>
+                          )
+                        })}
+                      </View>
+                    )}
+                  </View>
+                  <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
+                    {!land && (
+                      <View style={{ flex: 1 }}>
+                        <Text style={s.cellLabel}>{SUM_LABELS.area_sqft}</Text>
+                        <TextInput style={[s.input, { paddingHorizontal: 8, paddingVertical: 9, fontSize: 13 }]} keyboardType="numeric"
+                          value={r.area_sqft} onChangeText={(v) => setRowAt(i, { area_sqft: v })} />
+                      </View>
+                    )}
+                    <View style={{ flex: 1 }}>
+                      <Text style={s.cellLabel}>{land ? 'Value / lot (US$)' : SUM_LABELS.tar}</Text>
+                      <TextInput style={[s.input, { paddingHorizontal: 8, paddingVertical: 9, fontSize: 13 }]} keyboardType="numeric"
+                        placeholder={land ? 'market value' : 'rate'} value={r.tar} onChangeText={(v) => setRowAt(i, { tar: v })} />
                     </View>
-                  ))}
+                    <View style={{ flex: 1 }}>
+                      <Text style={s.cellLabel}>{land ? 'Lots (#)' : SUM_LABELS.quantity}</Text>
+                      <TextInput style={[s.input, { paddingHorizontal: 8, paddingVertical: 9, fontSize: 13 }]} keyboardType="numeric"
+                        value={r.quantity} onChangeText={(v) => setRowAt(i, { quantity: v })} />
+                    </View>
+                  </View>
+                  <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={s.cellLabel}>Amount (US$)</Text>
+                      <View style={[s.input, { paddingHorizontal: 8, paddingVertical: 9, justifyContent: 'center', backgroundColor: theme.colors.bg }]}>
+                        <Text style={{ fontSize: 13, color: theme.colors.text }}>{money(amount)}</Text>
+                      </View>
+                    </View>
+                    {!land && (
+                      <View style={{ flex: 1 }}>
+                        <Text style={s.cellLabel}>{SUM_LABELS.building_age}</Text>
+                        <TextInput style={[s.input, { paddingHorizontal: 8, paddingVertical: 9, fontSize: 13 }]} keyboardType="numeric"
+                          value={r.building_age} onChangeText={(v) => setRowAt(i, { building_age: v })} />
+                      </View>
+                    )}
+                    <View style={{ flex: 1 }}>
+                      <Text style={s.cellLabel}>{SUM_LABELS.depreciation_pct}</Text>
+                      <View style={[s.input, { paddingHorizontal: 8, paddingVertical: 9, justifyContent: 'center', backgroundColor: theme.colors.bg }]}>
+                        <Text style={{ fontSize: 13, color: theme.colors.text }}>{land ? '0.00' : depreciation.toFixed(2)}</Text>
+                      </View>
+                    </View>
+                  </View>
+                  <Text style={{ fontSize: 12, color: theme.colors.textMuted, marginTop: 8 }}>
+                    Row assessed value = Amount × (1 − Depreciation%) →{' '}
+                    <Text style={{ fontWeight: '800', color: theme.colors.navy }}>{money(assessed)}</Text>
+                  </Text>
                 </View>
-                <Text style={{ fontSize: 12, color: theme.colors.textMuted, marginTop: 8 }}>
-                  This row value = Amount × Qty × (1 − Depreciation%) →{' '}
-                  <Text style={{ fontWeight: '800', color: theme.colors.navy }}>US$ {rowValue(r).toLocaleString()}</Text>
-                </Text>
-              </View>
-            ))}
-            <Btn tone="ghost" label="+ Add Row" onPress={() => setRows([...rows, emptyRow()])} style={{ marginTop: 4 }} />
+              )
+            })}
+            <Btn tone="ghost" label="+ Add Row" onPress={() => setRows([...rows, emptyRow('Other')])} style={{ marginTop: 4 }} />
 
             <View style={s.totalsCard}>
               <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                <Text style={s.totalLabel}>Total computed value</Text>
-                <Text style={s.totalValue}>US$ {total.toLocaleString()}</Text>
+                <Text style={s.totalLabel}>Total assessed value</Text>
+                <Text style={s.totalValue}>US$ {total.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
               </View>
               <Text style={s.hint}>Annual tax = Reassessed value × Rate% {Number(otherAmounts) > 0 ? '+ Other amounts' : ''}</Text>
             </View>

@@ -27,6 +27,17 @@ const METRIC_PERMS = {
 }
 const METRIC_ORDER = ['tasks', 'bills', 'collections', 'payments', 'discoveries', 'valuations', 'visits', 'targets']
 
+// Bill-ledger metrics are for bill-handling roles; read-only bill viewers
+// (e.g. Valuation Officers) never see the Bills tab. Mirrors the backend's
+// canViewBillLedger gate in AnalyticsController / DashboardController.
+const LEDGER_PERMS = [
+  'bills.create', 'bills.edit', 'bills.assign', 'bills.amend_document', 'bills.amend_penalty_interest',
+  'records.view', 'records.edit',
+  'payments.view_queue', 'payments.verify', 'payments.reject',
+  'enforcement.bill_delivery', 'enforcement.visit',
+  'reports.view',
+]
+
 function Sel({ value, onChange, options = [], placeholder, className = '' }) {
   return (
     <select
@@ -46,9 +57,14 @@ function Sel({ value, onChange, options = [], placeholder, className = '' }) {
  * and a drill-down detail table. Charts are modeless: clicking a bar narrows the
  * detail table below. Backed by /dashboard/analytics.
  */
-export default function Analytics({ heading = 'Dashboard analytics' }) {
+export default function Analytics({ heading = 'Dashboard analytics', showExports = true }) {
   const { can } = useAuth()
-  const initialMetric = METRIC_ORDER.find((m) => METRIC_PERMS[m].some((p) => can(p))) || 'tasks'
+  const billLedger = LEDGER_PERMS.some((p) => can(p))
+  const metricPermitted = (m) => {
+    if (m === 'bills' && !billLedger) return false
+    return METRIC_PERMS[m].some((p) => can(p))
+  }
+  const initialMetric = METRIC_ORDER.find((m) => metricPermitted(m)) || 'tasks'
 
   const [metric, setMetric] = useState(initialMetric)
   const [groupBy, setGroupBy] = useState('')
@@ -184,14 +200,16 @@ export default function Analytics({ heading = 'Dashboard analytics' }) {
             <div className="text-xs font-bold uppercase tracking-wide text-slate-500">{heading}</div>
             <div className="text-xs text-slate-400">As of {new Date(meta.as_of).toLocaleString()}</div>
           </div>
-          <div className="flex items-center gap-2">
-            <Btn tone="white" onClick={() => download('csv')} disabled={dl === 'csv' || loading}>
-              {dl === 'csv' ? 'Downloading.' : 'CSV'}
-            </Btn>
-            <Btn tone="navy" onClick={() => download('pdf')} disabled={dl === 'pdf' || loading}>
-              {dl === 'pdf' ? 'Downloading.' : 'PDF'}
-            </Btn>
-          </div>
+          {showExports && (
+            <div className="flex items-center gap-2">
+              <Btn tone="white" onClick={() => download('csv')} disabled={dl === 'csv' || loading}>
+                {dl === 'csv' ? 'Downloading.' : 'CSV'}
+              </Btn>
+              <Btn tone="navy" onClick={() => download('pdf')} disabled={dl === 'pdf' || loading}>
+                {dl === 'pdf' ? 'Downloading.' : 'A4 PDF'}
+              </Btn>
+            </div>
+          )}
         </div>
       )}
       {err && <ErrorBox error={errMsg(err, 'Could not export.')} />}

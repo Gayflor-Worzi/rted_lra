@@ -1,46 +1,78 @@
 import { useState, useCallback } from 'react'
-import { View, Text, FlatList, TouchableOpacity, StyleSheet, RefreshControl, Alert, ActivityIndicator } from 'react-native'
+import { View, Text, FlatList, TouchableOpacity, StyleSheet, RefreshControl, Alert, ActivityIndicator, ScrollView } from 'react-native'
 import { useFocusEffect } from '@react-navigation/native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import api from '../api'
-import { cacheTasks, getCachedTasks } from '../db'
+import { fetchOfflineRead } from '../offline'
 import { useSync } from '../sync'
 import { useAuth } from '../auth'
 import { can, serverMessage } from '../rbac'
 import { theme } from '../theme'
-import { BrandHeader, Badge, Empty, Card } from '../components'
+import { BrandHeader, Badge, Empty, Card, OfflineReadStatus } from '../components'
+
+const STATUS_GROUPS = [
+  { key: 'all', label: 'All' },
+  { key: 'active', label: 'Active' },
+  { key: 'pending', label: 'Pending' },
+  { key: 'overdue', label: 'Overdue' },
+  { key: 'escalated', label: 'Escalated' },
+  { key: 'completed', label: 'Completed' },
+]
+
+const isCompleted = (task) => ['Resolved', 'Closed', 'Paid', 'Partially Paid'].includes(task.status)
 
 export default function TasksScreen({ navigation }) {
-  const { user } = useAuth()
+  const { user, canUseOfflineCache } = useAuth()
   const insets = useSafeAreaInsets()
   const [tasks, setTasks] = useState(null)
   const [refreshing, setRefreshing] = useState(false)
   const [offline, setOffline] = useState(false)
+  const [readStatus, setReadStatus] = useState(null)
+  const [syncedAt, setSyncedAt] = useState(null)
+  const [cacheError, setCacheError] = useState(null)
   const [error, setError] = useState('')
+  const [statusGroup, setStatusGroup] = useState('active')
   const { pending } = useSync()
 
-  const load = async (showSpinner = true) => {
+  const load = useCallback(async (showSpinner = true, group = statusGroup) => {
     if (showSpinner) setRefreshing(true)
     try {
-      const r = await api.get('/enforcement-assignments/my')
-      const list = r.data.data?.data || r.data.data || []
-      setTasks(list)
-      setOffline(false)
-      setError('')
-      await cacheTasks(list)
-    } catch (e) {
-      if (e.response) {
-        setError(serverMessage(e, 'Could not load your assignments.'))
+      const result = await fetchOfflineRead({
+        module: 'tasks',
+        cacheKey: `${user?.role}:status_group:${group}`,
+        user,
+        allowCache: canUseOfflineCache,
+        request: () => api.get('/enforcement-assignments/my', { params: { status_group: group } }),
+        select: (response) => response.data?.data?.data || response.data?.data || [],
+      })
+      if (result.status === 'expired') {
         setTasks([])
+        setError('Your offline task copy has expired. Connect to refresh your assignments.')
       } else {
-        const cached = await getCachedTasks()
-        setTasks(cached)
-        setOffline(cached.length > 0)
+        setTasks(result.data)
+        setError('')
       }
+      setOffline(result.status === 'cached')
+      setReadStatus(result.status)
+      setSyncedAt(result.syncedAt)
+      setCacheError(result.cacheError || null)
+      if (result.status !== 'expired') setError('')
+    } catch (error) {
+      setError(serverMessage(error, 'Could not load your assignments.'))
+      setTasks([])
+      setOffline(false)
+      setReadStatus(null)
     } finally { setRefreshing(false) }
-  }
+  }, [statusGroup, user, canUseOfflineCache])
 
-  useFocusEffect(useCallback(() => { load(false) }, []))
+  useFocusEffect(useCallback(() => { load(false) }, [load]))
+
+  const changeGroup = (group) => {
+    setStatusGroup(group)
+    setTasks(null)
+    setError('')
+    load(true, group)
+  }
 
   const navigate = (item) => {
     navigation.navigate('TaskDetail', { taskId: item.id, assignment: item })
@@ -58,17 +90,18 @@ export default function TasksScreen({ navigation }) {
 
   const stats = {
     total: tasks?.length || 0,
-    completed: tasks?.filter((t) => ['Delivered', 'Closed', 'Resolved', 'Paid', 'Payment Claimed'].includes(t.status)).length || 0,
-    overdue: tasks?.filter((t) => ['Escalated', '30-Day Warning', '72-Hour Warning'].includes(t.status) || (t.due_date && t.due_date.slice(0, 10) < new Date().toISOString().slice(0, 10))).length || 0,
+    completed: tasks?.filter(isCompleted).length || 0,
+    overdue: tasks?.filter((t) => t.deadline_status?.is_overdue).length || 0,
   }
 
   const canLogVisit = can(user, 'tasks.complete') || can(user, 'enforcement.record_visit')
   const canClaimPayment = can(user, 'payments.claim')
+  const cachedReadOnly = readStatus === 'cached' || readStatus === 'expired'
 
   const row = ({ item }) => {
     const bill = item.property_bill
     return (
-      <Card onPress={() => navigate(item)}>
+      <Card onPress={cachedReadOnly ? undefined : () => navigate(item)}>
         <View style={s.cardTop}>
           <View style={{ flex: 1 }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
@@ -112,7 +145,7 @@ export default function TasksScreen({ navigation }) {
           </View>
         )}
 
-        <View style={s.actions}>
+        {!cachedReadOnly && <View style={s.actions}>
           {canLogVisit && (
             <TouchableOpacity style={s.visitBtn} onPress={() => openVisit(item)}>
               <Text style={s.visitBtnText}>Log Visit</Text>
@@ -123,7 +156,7 @@ export default function TasksScreen({ navigation }) {
               <Text style={s.receiptBtnText}>Receipt</Text>
             </TouchableOpacity>
           )}
-        </View>
+        </View>}
       </Card>
     )
   }
@@ -131,10 +164,11 @@ export default function TasksScreen({ navigation }) {
   return (
     <View style={s.container}>
       <BrandHeader
-        title="Assigned Tasks"
+        title="My Tasks"
         subtitle={offline ? 'Offline — showing cached data' : 'Field enforcement queue'}
         right={pending > 0 ? <View style={s.pendingChip}><Text style={s.pendingText}>{pending} to sync</Text></View> : null}
       />
+      <OfflineReadStatus status={readStatus} syncedAt={syncedAt} cacheError={cacheError} />
 
       {tasks === null ? (
         <View style={{ paddingTop: 60, alignItems: 'center' }}>
@@ -151,6 +185,21 @@ export default function TasksScreen({ navigation }) {
         </Card>
       ) : (
         <>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.filters}>
+            {STATUS_GROUPS.map((group) => {
+              const active = statusGroup === group.key
+              return (
+                <TouchableOpacity
+                  key={group.key}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: active }}
+                  onPress={() => changeGroup(group.key)}
+                  style={[s.filterChip, active && s.filterChipActive]}>
+                  <Text style={[s.filterText, active && s.filterTextActive]}>{group.label}</Text>
+                </TouchableOpacity>
+              )
+            })}
+          </ScrollView>
           {tasks.length > 0 && (
             <View style={s.statsRow}>
               <View style={s.stat}><Text style={s.statNum}>{stats.total}</Text><Text style={s.statLabel}>Assigned</Text></View>
@@ -165,7 +214,7 @@ export default function TasksScreen({ navigation }) {
             contentContainerStyle={{ paddingVertical: 8, paddingBottom: 24 + insets.bottom }}
             keyboardShouldPersistTaps="handled"
             refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => load(true)} tintColor={theme.colors.primary} />}
-            ListEmptyComponent={<Empty icon="✅" title="No assignments" sub="When enforcement cases are assigned to you, they will appear here." />}
+            ListEmptyComponent={<Empty icon="✅" title={`No ${STATUS_GROUPS.find((group) => group.key === statusGroup)?.label.toLowerCase()} tasks`} sub="Tasks matching this status will appear here." />}
           />
         </>
       )}
@@ -177,6 +226,11 @@ const s = StyleSheet.create({
   container: { flex: 1, backgroundColor: theme.colors.bg },
   pendingChip: { backgroundColor: theme.colors.primaryLight, borderRadius: 20, paddingHorizontal: 10, paddingVertical: 4 },
   pendingText: { fontSize: 11, fontWeight: '700', color: theme.colors.primaryDark },
+  filters: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 4, gap: 8 },
+  filterChip: { minHeight: 40, justifyContent: 'center', borderRadius: 20, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.white, paddingHorizontal: 14 },
+  filterChipActive: { backgroundColor: theme.colors.navy, borderColor: theme.colors.navy },
+  filterText: { color: theme.colors.textMuted, fontSize: 12, fontWeight: '700' },
+  filterTextActive: { color: theme.colors.white },
   retryBtn: { backgroundColor: theme.colors.primary, borderRadius: 10, paddingVertical: 14, alignItems: 'center', minHeight: 48, justifyContent: 'center' },
   statsRow: { flexDirection: 'row', backgroundColor: '#fff', marginTop: 12, marginHorizontal: 16, borderRadius: 12, borderWidth: 1, borderColor: theme.colors.border, overflow: 'hidden' },
   stat: { flex: 1, alignItems: 'center', paddingVertical: 12 },

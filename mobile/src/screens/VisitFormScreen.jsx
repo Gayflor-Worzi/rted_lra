@@ -9,9 +9,10 @@ import { useAuth } from '../auth'
 import { can, serverMessage, isOnlineRejection } from '../rbac'
 import { theme } from '../theme'
 import { Screen, Field, Btn, ChipRow, Card, InfoRow } from '../components'
+import { photoToUpload } from '../image'
 
 const VISIT_STATUSES = ['Visited - Delivered', 'Visited - Payment Follow-up', 'Premises Locked', 'Business Closed', 'Subject Not Found', 'Refused Service', 'Follow-up Scheduled']
-const DELIVERY_STATUSES = ['Delivered', 'Undelivered', 'Returned to Office', 'Not Mailable']
+const DELIVERY_STATUSES = ['Out for Delivery', 'Delivered', 'Returned', 'Undelivered', 'Not Mailable']
 
 export default function VisitFormScreen({ route, navigation }) {
   const { assignment, bill } = route.params || {}
@@ -41,6 +42,23 @@ export default function VisitFormScreen({ route, navigation }) {
   }, [bill?.id])
 
   useFocusEffect(useCallback(() => { loadHistory() }, [loadHistory]))
+
+  // A visit must always be recorded against a specific assignment & bill.
+  if (!bill || !assignment) {
+    return (
+      <Screen>
+        <Card style={{ marginTop: 14 }}>
+          <Text style={s.billNo}>Field visits</Text>
+          <Text style={{ color: theme.colors.textMuted, fontSize: 13, marginTop: 6 }}>
+            Select an assignment first — a visit is always recorded against one of your assigned cases.
+          </Text>
+          <View style={{ marginTop: 14 }}>
+            <Btn label="📋 Choose an assignment" onPress={() => navigation.navigate('Tasks')} />
+          </View>
+        </Card>
+      </Screen>
+    )
+  }
 
   const canComplete = can(user, 'tasks.complete') || can(user, 'enforcement.record_visit')
   const canEscalate = can(user, 'tasks.escalate')
@@ -73,8 +91,8 @@ export default function VisitFormScreen({ route, navigation }) {
   const pickPhotos = async () => {
     const { status: perm } = await ImagePicker.requestMediaLibraryPermissionsAsync()
     if (perm !== 'granted') return Alert.alert('Permission', 'Gallery access required to attach proof documents.')
-    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: 'images', allowsMultipleSelection: true, quality: 0.7 })
-    if (!result.canceled) setPhotos([...photos, ...result.assets.map((a) => a.uri)])
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: 'images', allowsMultipleSelection: true, quality: 0.6 })
+    if (!result.canceled) setPhotos([...photos, ...result.assets.map((a) => ({ uri: a.uri, fromCamera: false }))])
   }
 
   const takePhoto = async () => {
@@ -87,8 +105,11 @@ export default function VisitFormScreen({ route, navigation }) {
           : 'Camera permission was denied. Enable it in your device settings, then try again.'
       )
     }
-    const result = await ImagePicker.launchCameraAsync({ quality: 0.7 })
-    if (!result.canceled) setPhotos([...photos, result.assets[0].uri])
+    const result = await ImagePicker.launchCameraAsync({ quality: 0.6 })
+    if (!result.canceled) {
+      const a = result.assets[0]
+      setPhotos([...photos, { uri: a.uri, fromCamera: true }])
+    }
   }
 
   const submit = async () => {
@@ -108,17 +129,13 @@ export default function VisitFormScreen({ route, navigation }) {
       gps_accuracy: gps.accuracy,
       gps_captured_at: gps.at,
       photo_type: delivery === 'Delivered' ? 'BILL_DELIVERY' : 'PROPERTY_FULL_VIEW',
-      proof_photo: photos[0] || undefined,
+      proof_photo: photos[0]
+        ? await photoToUpload(photos[0])
+        : undefined,
       claim_receipt_number: claim ? claimReceipt.trim() : undefined,
       claim_amount: claim ? Number(claimAmount) : undefined,
       claim_payment_date: claim && claimDate ? claimDate : undefined,
       claim_remarks: claim && claimNotes.trim() ? claimNotes.trim() : undefined,
-    }
-    const actionPayload = {
-      assignment_id: assignment.id,
-      action: 'completed',
-      visit_date: new Date().toISOString().slice(0, 10),
-      notes: notes || undefined,
     }
     const queued = []
     const fail = (e, what) => {
@@ -135,13 +152,6 @@ export default function VisitFormScreen({ route, navigation }) {
       if (fail(e, 'Visit')) return
       await queueAndFlush('visit', payload)
       queued.push('visit')
-    }
-    try {
-      await api.post(`/enforcement-assignments/${assignment.id}/action`, actionPayload)
-    } catch (e) {
-      if (fail(e, 'Task update')) return
-      await queueAndFlush('action', actionPayload)
-      queued.push('action')
     }
     Alert.alert(
       queued.length ? 'Saved offline' : 'Visit saved',
@@ -229,9 +239,9 @@ export default function VisitFormScreen({ route, navigation }) {
       </View>
       {photos.length > 0 && (
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingHorizontal: 16, marginBottom: 8 }}>
-          {photos.map((uri, i) => (
+          {photos.map((shot, i) => (
             <TouchableOpacity key={i} onPress={() => setPhotos(photos.filter((_, ix) => ix !== i))} hitSlop={8}>
-              <Image source={{ uri }} style={{ width: 76, height: 76, borderRadius: 10, borderWidth: 1, borderColor: theme.colors.success }} />
+              <Image source={{ uri: shot.uri }} style={{ width: 76, height: 76, borderRadius: 10, borderWidth: 1, borderColor: theme.colors.success }} />
             </TouchableOpacity>
           ))}
         </View>

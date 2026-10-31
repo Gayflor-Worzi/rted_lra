@@ -2,6 +2,8 @@
 
 namespace App\Console\Commands;
 
+use App\Models\PropertyBill;
+use App\Models\Task;
 use App\Services\EscalationService;
 use App\Services\TaskWorkflowService;
 use Illuminate\Console\Command;
@@ -24,7 +26,7 @@ class TaskAdvanceCommand extends Command
         if ($dryRun) {
             $eligible = 0;
 
-            $bills = \App\Models\PropertyBill::query()
+            $bills = PropertyBill::query()
                 ->whereNotNull('delivery_date')
                 ->whereNotIn('case_status', ['Under Verification', 'Resolved', 'Closed'])
                 ->where('payment_status', '!=', 'Paid')
@@ -40,7 +42,7 @@ class TaskAdvanceCommand extends Command
             }
 
             // A dry run also reports tasks that are merely awaiting their window.
-            $awaiting = \App\Models\Task::query()
+            $awaiting = Task::query()
                 ->where('reference_type', 'property_bill')
                 ->whereNotIn('status', ['Resolved', 'Closed', 'Paid', 'Logged'])
                 ->with('bill')
