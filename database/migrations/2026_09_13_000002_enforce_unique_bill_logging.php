@@ -13,30 +13,13 @@ return new class extends Migration
 
     private const INDEX_NAME = 'property_bills_assessment_unique';
 
-    /** Dependent tables that reference a bill and must follow a merge. */
-    private const DEPENDENT_TABLES = [
-        'enforcement_visits',
-        'payment_verifications',
-        'payments',
-        'valuations',
-        'me_queries',
-        'appeals',
-        'valuation_property_descriptions',
-        'evidence_photos',
-        'property_discoveries',
-        'task_engagements',
-        'bill_amendments',
-        'receipt_fingerprints',
-    ];
-
     /**
      * One assessment may be logged only once: the normalized Property ID + TIN
-     * + Tax Period triple is unique while the document is live. This cleans up
-     * duplicate log rows that exist in the seeded/test data (earliest log wins,
-     * dependents follow the survivor, duplicates are soft-deleted) and then adds
-     * a database-level backstop. The API layer is the primary guard and returns
-     * the friendly 422 + Amend hint; the index just makes concurrent
-     * double-logging impossible.
+     * + Tax Period triple is unique while the document is live. Existing
+     * duplicate assessments must be reviewed before the unique backstop is
+     * added; this migration does not merge or hide existing bill records. The
+     * API layer is the primary guard and returns the friendly 422 + Amend hint;
+     * the index prevents concurrent double-logging.
      *
      * The backstop is NOT a plain 3-column unique — soft-deleted duplicates
      * (and NULLs) would break it. Instead a stored, generated assessment_key is
@@ -49,7 +32,7 @@ return new class extends Migration
             return;
         }
 
-        $this->mergeDuplicateAssessments();
+        $this->assertNoUnresolvedDuplicateAssessments();
         $this->addUniqueBackstop();
     }
 
@@ -73,7 +56,7 @@ return new class extends Migration
         return "UPPER(TRIM(COALESCE($column, '')))";
     }
 
-    private function mergeDuplicateAssessments(): void
+    private function assertNoUnresolvedDuplicateAssessments(): void
     {
         $p = $this->normalized('property_id');
         $t = $this->normalized('tin');
@@ -86,62 +69,16 @@ return new class extends Migration
             ->havingRaw('COUNT(*) > 1')
             ->get();
 
-        foreach ($groups as $group) {
-            $propertyId = trim((string) $group->p);
-            $tin = trim((string) $group->t);
+        $hasUnresolvedDuplicate = $groups->contains(function ($group): bool {
+            return trim((string) $group->p) !== ''
+                && trim((string) $group->t) !== '';
+        });
 
-            if ($propertyId === '' || $tin === '') {
-                continue;
-            }
-
-            $keeper = (int) $group->keeper;
-
-            $dupeIds = DB::table(self::TABLE)
-                ->whereNull('deleted_at')
-                ->where('id', '!=', $keeper)
-                ->whereRaw("$p = ?", [$propertyId])
-                ->whereRaw("$t = ?", [$tin])
-                ->whereRaw("$per = ?", [trim((string) $group->per)])
-                ->orderBy('id')
-                ->pluck('id')
-                ->map(fn ($id) => (int) $id)
-                ->all();
-
-            if (! $dupeIds) {
-                continue;
-            }
-
-            $this->mergeDependentsOn($dupeIds, $keeper);
-
-            DB::table(self::TABLE)->whereIn('id', $dupeIds)->update(['deleted_at' => now()]);
-
-            if (defined('STDOUT')) {
-                fwrite(STDOUT, sprintf(
-                    '[unique-bill-logging] Merged %d duplicate log row(s) (%s) onto bill id %d for Property %s / TIN %s / Tax Period %s.'.PHP_EOL,
-                    count($dupeIds),
-                    implode(', ', array_map('strval', $dupeIds)),
-                    $keeper,
-                    $propertyId,
-                    $tin,
-                    trim((string) $group->per)
-                ));
-            }
-        }
-    }
-
-    private function mergeDependentsOn(array $dupeIds, int $keeper): void
-    {
-        foreach (self::DEPENDENT_TABLES as $table) {
-            if (Schema::hasTable($table) && Schema::hasColumn($table, 'bill_id')) {
-                DB::table($table)->whereIn('bill_id', $dupeIds)->update(['bill_id' => $keeper]);
-            }
-        }
-
-        if (Schema::hasTable('tasks')) {
-            DB::table('tasks')
-                ->where('reference_type', 'property_bill')
-                ->whereIn('reference_id', $dupeIds)
-                ->update(['reference_id' => $keeper]);
+        if ($hasUnresolvedDuplicate) {
+            throw new RuntimeException(
+                'Migration 2026_09_13_000002_enforce_unique_bill_logging found duplicate live assessments. '
+                .'No bill or linked records were changed; review and resolve duplicates before retrying.'
+            );
         }
     }
 
@@ -163,7 +100,7 @@ return new class extends Migration
         $per = "TRIM(COALESCE(tax_period, ''))";
 
         $expr = match ($driver) {
-            'sqlite' => "UPPER(LENGTH($pid) || '|' || $pid || '|' || LENGTH($tin) || '|' || $tin || '|' || LENGTH($per) || '|' || $per)",
+            'sqlite', 'pgsql' => "UPPER(LENGTH($pid) || '|' || $pid || '|' || LENGTH($tin) || '|' || $tin || '|' || LENGTH($per) || '|' || $per)",
             default => "UPPER(CONCAT_WS('|', LENGTH($pid), $pid, LENGTH($tin), $tin, LENGTH($per), $per))",
         };
 

@@ -2,44 +2,21 @@
 
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 /**
  * Spec v4 — controlled-routing workflow.
  *
- * 1. Reset the discovery / valuation tables (dev work requested: clear old
- *    status data so the new controlled vocabulary starts clean).
- * 2. Extend `property_discoveries` with the fields the new workflow needs
+ * 1. Extend `property_discoveries` with the fields the new workflow needs
  *    (declared value, submission stamp, automatic-classification source,
  *    current task owner, Account & Record Manager review, referral audit).
- * 3. Extend `valuations` with the Account & Record Manager final-review fields.
+ * 2. Extend `valuations` with the Account & Record Manager final-review fields.
  */
 return new class extends Migration
 {
     public function up(): void
     {
-        // ── Reset old-status data (dev reset requested) ───────────────────────
-        // Tasks / evidence rows that reference the reset records are removed or
-        // unlinked first so no orphaned or FK-blocking rows remain.
-        DB::table('tasks')
-            ->whereIn('reference_type', ['valuation', 'property_discovery'])
-            ->delete();
-
-        DB::table('evidence_photos')->whereNotNull('valuation_id')->orWhereNotNull('discovery_id')->delete();
-
-        // MySQL refuses TRUNCATE on tables referenced by FK constraints while the
-        // checks are on; the reset is a deliberate dev operation, so temporarily
-        // disable the checks (no live data survives — §20 reset decision).
-        // Schema::withoutForeignKeyConstraints emits the correct dialect for the
-        // active driver (MySQL SET FOREIGN_KEY_CHECKS, SQLite PRAGMA foreign_keys).
-        Schema::withoutForeignKeyConstraints(function () {
-            foreach (['valuation_property_descriptions', 'valuation_reviews', 'valuations', 'property_discoveries'] as $table) {
-                DB::table($table)->truncate();
-            }
-        });
-
-        // ── Discovery workflow fields ──────────────────────────────────────────
+        // ── Discovery workflow fields ────────────────────────────────────────
         Schema::table('property_discoveries', function (Blueprint $table) {
             $table->decimal('declared_value', 14, 2)->nullable()->after('description');
             $table->timestamp('submitted_at')->nullable()->after('discovered_by');

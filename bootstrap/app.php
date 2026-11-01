@@ -37,4 +37,17 @@ return Application::configure(basePath: dirname(__DIR__))
                 return $request->is('api/*') || $request->expectsJson();
             },
         );
+        $exceptions->respond(function ($response, $exception, $request) {
+            $origin = $request->header('Origin');
+
+            if ($origin && in_array($origin, config('cors.allowed_origins', []), true)) {
+                $response->headers->set('Access-Control-Allow-Origin', $origin);
+                $response->headers->set('Access-Control-Allow-Credentials', 'true');
+                $response->headers->set('Vary', 'Origin');
+                $response->headers->set('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+                $response->headers->set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+            }
+
+            return $response;
+        });
     })->create();

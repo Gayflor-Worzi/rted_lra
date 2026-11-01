@@ -147,7 +147,7 @@ return new class extends Migration
         $refId = 'reference_id';
 
         $expr = match ($driver) {
-            'sqlite' => "UPPER(LENGTH($type) || '|' || $type || '|' || LENGTH($refType) || '|' || $refType || '|' || $refId)",
+            'sqlite', 'pgsql' => "UPPER(LENGTH($type) || '|' || $type || '|' || LENGTH($refType) || '|' || $refType || '|' || $refId)",
             default => "UPPER(CONCAT_WS('|', LENGTH($type), $type, LENGTH($refType), $refType, $refId))",
         };
 
