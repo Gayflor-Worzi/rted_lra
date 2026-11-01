@@ -5,6 +5,7 @@ import { createRoot } from 'react-dom/client'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import Login from './Login'
+import api from '../api'
 
 const { mockUseAuth } = vi.hoisted(() => ({ mockUseAuth: vi.fn() }))
 
@@ -70,5 +71,36 @@ describe('login navigation with React Router 7', () => {
 
     expect(mount.querySelector('[data-testid="dashboard-page"]')).not.toBeNull()
     expect(mount.querySelector('[data-testid="current-path"]').textContent).toBe('/dashboard')
+  })
+
+  it('starts the password-recovery flow from the login screen', async () => {
+    api.post.mockResolvedValue({
+      data: {
+        data: { reference: 'a'.repeat(64) },
+        message: 'If this address belongs to an active System Administrator, a verification code will be sent.',
+      },
+    })
+
+    await act(async () => root.render(
+      <MemoryRouter initialEntries={['/login']}>
+        <Routes>
+          <Route path="/login" element={<Login />} />
+        </Routes>
+      </MemoryRouter>,
+    ))
+
+    await act(async () => {
+      mount.querySelector('button[type="button"]').click()
+    })
+
+    await setValue(mount.querySelector('input[type="email"]'), 'admin@example.test')
+    await act(async () => {
+      mount.querySelector('form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    expect(api.post).toHaveBeenCalledWith('/auth/password-recovery/request', { email: 'admin@example.test' })
+    expect(mount.textContent).toContain('Verify your email')
+    expect(mount.querySelector('input[autocomplete="one-time-code"]')).not.toBeNull()
   })
 })

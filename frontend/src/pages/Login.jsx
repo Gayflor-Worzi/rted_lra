@@ -13,6 +13,10 @@ export default function Login() {
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [resetMode, setResetMode] = useState(false)
+  const [recoveryStep, setRecoveryStep] = useState('')
+  const [recoveryReference, setRecoveryReference] = useState('')
+  const [recoveryOtp, setRecoveryOtp] = useState('')
+  const [recoveryToken, setRecoveryToken] = useState('')
   const [err, setErr] = useState('')
   const [info, setInfo] = useState('')
   const [busy, setBusy] = useState(false)
@@ -53,6 +57,66 @@ export default function Login() {
     setBusy(false)
   }
 
+  const requestRecovery = async () => {
+    setErr(''); setInfo(''); setBusy(true)
+    try {
+      const response = await api.post('/auth/password-recovery/request', { email })
+      setRecoveryReference(response.data.data.reference)
+      setRecoveryStep('verify')
+      setInfo(response.data.message)
+    } catch (ex) {
+      setErr(errMsg(ex, 'Unable to start password recovery.'))
+    }
+    setBusy(false)
+  }
+
+  const verifyRecoveryOtp = async () => {
+    setErr(''); setInfo(''); setBusy(true)
+    try {
+      const response = await api.post('/auth/password-recovery/verify', {
+        reference: recoveryReference,
+        otp: recoveryOtp,
+      })
+      setRecoveryToken(response.data.data.reset_token)
+      setRecoveryStep('new-password')
+      setInfo('Verification complete. Create a new password.')
+    } catch (ex) {
+      setErr(errMsg(ex, 'The verification code is invalid or expired.'))
+    }
+    setBusy(false)
+  }
+
+  const completeRecovery = async () => {
+    setErr('')
+    if (newPassword.length < 12 || !/[a-z]/.test(newPassword) || !/[A-Z]/.test(newPassword) || !/\d/.test(newPassword) || !/[^A-Za-z0-9]/.test(newPassword)) {
+      setErr('Use at least 12 characters with uppercase and lowercase letters, a number, and a symbol.')
+      return
+    }
+    if (newPassword !== confirmPassword) { setErr('Passwords do not match.'); return }
+    setBusy(true)
+    try {
+      const response = await api.post('/auth/password-recovery/complete', {
+        reset_token: recoveryToken,
+        password: newPassword,
+        password_confirmation: confirmPassword,
+      })
+      setRecoveryStep('')
+      setRecoveryReference(''); setRecoveryOtp(''); setRecoveryToken('')
+      setNewPassword(''); setConfirmPassword('')
+      setInfo(response.data.message)
+    } catch (ex) {
+      setErr(errMsg(ex, 'Unable to update password.'))
+    }
+    setBusy(false)
+  }
+
+  const backToRecoveryLogin = () => {
+    setRecoveryStep('')
+    setRecoveryReference(''); setRecoveryOtp(''); setRecoveryToken('')
+    setNewPassword(''); setConfirmPassword('')
+    setErr(''); setInfo('')
+  }
+
   const backToLogin = async () => {
     await logout()
     setResetMode(false)
@@ -64,6 +128,9 @@ export default function Login() {
   const submit = (e) => {
     e.preventDefault()
     if (resetMode) doReset()
+    else if (recoveryStep === 'request') requestRecovery()
+    else if (recoveryStep === 'verify') verifyRecoveryOtp()
+    else if (recoveryStep === 'new-password') completeRecovery()
     else doLogin()
   }
 
@@ -103,7 +170,48 @@ export default function Login() {
               <img src="/assets/lra-logo.png" alt="LRA" className="max-w-full object-contain" />
             </div>
           </div>
-          {resetMode ? (
+          {recoveryStep ? (
+            <>
+              <h2 className="text-2xl font-bold text-navy-800">
+                {recoveryStep === 'request' ? 'Recover administrator password' : recoveryStep === 'verify' ? 'Verify your email' : 'Create a new password'}
+              </h2>
+              <p className="text-sm text-slate-500 mb-6">
+                {recoveryStep === 'request'
+                  ? 'Password recovery is available to active System Administrators.'
+                  : recoveryStep === 'verify'
+                    ? 'Enter the six-digit code sent to the account email address. It expires in five minutes.'
+                    : 'Choose a password with at least 12 characters, including upper- and lowercase letters, a number, and a symbol.'}
+              </p>
+              {info && <div className="mb-4"><SuccessBox>{info}</SuccessBox></div>}
+              {err && <div className="mb-4 rounded-xl bg-red-50 text-red-700 border border-red-100 px-4 py-3 text-sm">⚠️ {err}</div>}
+              {recoveryStep === 'request' && (
+                <>
+                  <label className="block text-xs font-semibold text-slate-600 mb-1.5">Administrator email</label>
+                  <Input className="w-full mb-6" value={email} onChange={(e) => setEmail(e.target.value)} type="email" autoComplete="email" required placeholder="you@lra.gov.lr" />
+                </>
+              )}
+              {recoveryStep === 'verify' && (
+                <>
+                  <label className="block text-xs font-semibold text-slate-600 mb-1.5">Six-digit code</label>
+                  <Input className="w-full mb-6" value={recoveryOtp} onChange={(e) => setRecoveryOtp(e.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" required minLength={6} maxLength={6} placeholder="000000" />
+                </>
+              )}
+              {recoveryStep === 'new-password' && (
+                <>
+                  <label className="block text-xs font-semibold text-slate-600 mb-1.5">New password</label>
+                  <Input className="w-full mb-4" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} type="password" autoComplete="new-password" required minLength={12} placeholder="At least 12 characters" />
+                  <label className="block text-xs font-semibold text-slate-600 mb-1.5">Confirm password</label>
+                  <Input className="w-full mb-6" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} type="password" autoComplete="new-password" required minLength={12} placeholder="Repeat the new password" />
+                </>
+              )}
+              <Btn type="submit" disabled={busy} className="w-full py-3 shadow-lg shadow-brand-500/20">
+                {busy ? 'Please wait…' : recoveryStep === 'request' ? 'Send verification code' : recoveryStep === 'verify' ? 'Verify code' : 'Set new password'}
+              </Btn>
+              <button type="button" onClick={backToRecoveryLogin} className="w-full text-center text-xs text-slate-400 mt-4 hover:text-slate-600 transition">
+                ← Back to sign in
+              </button>
+            </>
+          ) : resetMode ? (
             <>
               <h2 className="text-2xl font-bold text-navy-800">Create a new password</h2>
               <p className="text-sm text-slate-500 mb-6">First sign-in requires a password change before you can continue.</p>
@@ -133,6 +241,9 @@ export default function Login() {
               <Btn type="submit" disabled={busy} className="w-full py-3 shadow-lg shadow-brand-500/20">
                 {busy ? 'Signing in…' : 'Sign In'}
               </Btn>
+              <button type="button" onClick={() => { setRecoveryStep('request'); setErr(''); setInfo('') }} className="w-full text-center text-xs text-brand-600 mt-4 hover:text-brand-700 transition">
+                Forgot password?
+              </button>
               <p className="text-center text-xs text-slate-400 mt-6">Internal use · LRA — RETD</p>
               <div className="mt-8 rounded-2xl border border-slate-200 bg-white p-4">
                 <div className="flex items-center gap-3">

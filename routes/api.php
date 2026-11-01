@@ -5,6 +5,7 @@ use App\Http\Controllers\Api\AnalyticsController;
 use App\Http\Controllers\Api\AssistantCommissionerDashboardController;
 use App\Http\Controllers\Api\AssistantCommissionerTaskController;
 use App\Http\Controllers\Api\AuditController;
+use App\Http\Controllers\Api\AdminPasswordRecoveryController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\BillRegisterController;
 use App\Http\Controllers\Api\DashboardController;
@@ -58,6 +59,9 @@ Route::get('/v1/meta', fn () => response()->json([
 ]));
 
 Route::post('/v1/auth/login', [AuthController::class, 'login'])->middleware('throttle:30,1');
+Route::post('/v1/auth/password-recovery/request', [AdminPasswordRecoveryController::class, 'requestOtp']);
+Route::post('/v1/auth/password-recovery/verify', [AdminPasswordRecoveryController::class, 'verifyOtp']);
+Route::post('/v1/auth/password-recovery/complete', [AdminPasswordRecoveryController::class, 'completeReset']);
 
 Route::prefix('v1')->middleware(['auth:sanctum'])->group(function () {
     Route::middleware('auth:sanctum')->group(function () {

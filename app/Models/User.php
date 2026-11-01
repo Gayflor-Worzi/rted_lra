@@ -40,6 +40,7 @@ class User extends Authenticatable
         'role_id',
         'is_active',
         'must_reset_password',
+        'password_changed_at',
         'supervisor_id',
         'last_login_at',
     ];
@@ -54,6 +55,7 @@ class User extends Authenticatable
             'last_login_at' => 'datetime',
             'is_active' => 'boolean',
             'must_reset_password' => 'boolean',
+            'password_changed_at' => 'datetime',
         ];
     }
 

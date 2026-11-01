@@ -103,6 +103,7 @@ class AuthController extends Controller
             'password' => Hash::make($request->password),
             'must_reset_password' => false,
             'email_verified_at' => $user->email_verified_at ?? now(),
+            'password_changed_at' => now(),
         ]);
 
         // Invalidate other sessions: the user now has the new password.
