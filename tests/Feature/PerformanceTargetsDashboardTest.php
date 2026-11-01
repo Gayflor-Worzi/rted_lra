@@ -9,6 +9,7 @@ use App\Models\StaffTarget;
 use App\Models\User;
 use App\Models\Valuation;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Carbon;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
@@ -228,32 +229,35 @@ class PerformanceTargetsDashboardTest extends TestCase
     {
         $officer = $this->officer();
         $now = now();
+        $currentMonthStart = $now->copy()->startOfMonth();
+        $pastMonthStart = $currentMonthStart->copy()->subMonth();
+        $futureMonthStart = $currentMonthStart->copy()->addMonth();
 
         $past = $this->target($officer, [
             'metric' => 'visits',
             'target_value' => 10,
-            'start_date' => $now->copy()->subMonth()->startOfMonth()->toDateString(),
-            'end_date' => $now->copy()->subMonth()->endOfMonth()->toDateString(),
+            'start_date' => $pastMonthStart->toDateString(),
+            'end_date' => $pastMonthStart->copy()->endOfMonth()->toDateString(),
         ]);
         $current = $this->target($officer, [
             'metric' => 'visits',
             'target_value' => 20,
-            'start_date' => $now->copy()->startOfMonth()->toDateString(),
-            'end_date' => $now->copy()->endOfMonth()->toDateString(),
+            'start_date' => $currentMonthStart->toDateString(),
+            'end_date' => $currentMonthStart->copy()->endOfMonth()->toDateString(),
         ]);
         $future = $this->target($officer, [
             'metric' => 'visits',
             'target_value' => 30,
-            'start_date' => $now->copy()->addMonth()->startOfMonth()->toDateString(),
-            'end_date' => $now->copy()->addMonth()->endOfMonth()->toDateString(),
+            'start_date' => $futureMonthStart->toDateString(),
+            'end_date' => $futureMonthStart->copy()->endOfMonth()->toDateString(),
         ]);
 
         foreach ([
-            $now->copy()->subMonth()->startOfMonth()->addDays(2),
-            $now->copy()->subMonth()->startOfMonth()->addDays(3),
-            $now->copy()->startOfMonth()->addDays(2),
-            $now->copy()->startOfMonth()->addDays(3),
-            $now->copy()->startOfMonth()->addDays(4),
+            $pastMonthStart->copy()->addDays(2),
+            $pastMonthStart->copy()->addDays(3),
+            $currentMonthStart->copy()->addDays(2),
+            $currentMonthStart->copy()->addDays(3),
+            $currentMonthStart->copy()->addDays(4),
         ] as $visitDate) {
             EnforcementVisit::create([
                 'officer_id' => $officer->id,
@@ -273,9 +277,46 @@ class PerformanceTargetsDashboardTest extends TestCase
         $this->assertEquals(60.0, $overall['target_value']);
         $this->assertEquals(5.0, $overall['achieved_value']);
         $this->assertEquals(8.3, $overall['completion_rate']);
+        $this->assertSame($current->start_date->toDateString(), $perf['window']['start']);
+        $this->assertSame($current->end_date->toDateString(), $perf['window']['end']);
         $this->assertEquals(2.0, $targets[$past->id]['achieved_value']);
         $this->assertEquals(3.0, $targets[$current->id]['achieved_value']);
         $this->assertEquals(0.0, $targets[$future->id]['achieved_value']);
+    }
+
+    public function test_active_windows_are_inclusive_and_month_end_dates_do_not_overflow(): void
+    {
+        $officer = $this->officer();
+
+        $october31 = Carbon::parse('2026-10-31');
+        $octoberPreviousMonth = $october31->copy()->startOfMonth()->subMonth();
+        $this->assertSame('2026-09-01', $octoberPreviousMonth->toDateString());
+        $this->assertSame('2026-09-30', $octoberPreviousMonth->copy()->endOfMonth()->toDateString());
+
+        $march31 = Carbon::parse('2026-03-31');
+        $marchPreviousMonth = $march31->copy()->startOfMonth()->subMonth();
+        $this->assertSame('2026-02-01', $marchPreviousMonth->toDateString());
+        $this->assertSame('2026-02-28', $marchPreviousMonth->copy()->endOfMonth()->toDateString());
+
+        $cases = [
+            ['2026-10-31', '2026-09-01', '2026-09-30', false],
+            ['2026-03-31', '2026-02-01', '2026-02-28', false],
+            ['2024-03-31', '2024-02-01', '2024-02-29', false],
+            ['2024-02-29', '2024-02-01', '2024-02-29', true],
+            ['2025-02-28', '2025-02-01', '2025-02-28', true],
+            ['2026-10-31', '2026-10-01', '2026-10-31', true],
+            ['2026-10-31', '2026-11-01', '2026-11-30', false],
+        ];
+
+        foreach ($cases as [$today, $startDate, $endDate, $expected]) {
+            $this->travelTo(Carbon::parse($today));
+            $target = $this->target($officer, [
+                'start_date' => $startDate,
+                'end_date' => $endDate,
+            ]);
+
+            $this->assertSame($expected, $target->isActive(), "{$today}: {$startDate} through {$endDate}");
+        }
     }
 
     public function test_a_staff_member_with_no_targets_gets_an_empty_list(): void

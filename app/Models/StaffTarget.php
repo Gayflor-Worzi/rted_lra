@@ -194,16 +194,16 @@ class StaffTarget extends Model
 
     public function isActive(): bool
     {
-        $now = now();
+        $today = today();
 
         if ($this->status !== 'Approved') {
             return false;
         }
-        if ($this->start_date && $now->lt($this->start_date->startOfDay())) {
+        if ($this->start_date && $today->lt($this->start_date->copy()->startOfDay())) {
             return false;
         }
 
-        return ! $this->end_date || $now->lte($this->end_date->endOfDay());
+        return ! $this->end_date || $today->lte($this->end_date->copy()->startOfDay());
     }
 
     public function approve(?User $by = null): void
