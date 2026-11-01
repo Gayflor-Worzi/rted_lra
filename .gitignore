@@ -19,6 +19,7 @@
 /mobile/node_modules
 /mobile/.expo
 /mobile/dist
+/mobile/android/app/debug.keystore
 /apk
 /frontend/dist
 /public/build
