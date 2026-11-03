@@ -5,6 +5,7 @@ dist/
 .env
 .env.*
 android/app/debug.keystore
+start-expo.bat
 *.jks
 *.keystore
 *.p12
