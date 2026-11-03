@@ -72,9 +72,11 @@ def releaseStorePassword = System.getenv('RETD_RELEASE_STORE_PASSWORD')
 def releaseKeyAlias = System.getenv('RETD_RELEASE_KEY_ALIAS')
 def releaseKeyPassword = System.getenv('RETD_RELEASE_KEY_PASSWORD')
 def hasReleaseSigning = releaseStoreFile && releaseStorePassword && releaseKeyAlias && releaseKeyPassword
+def easBuildGradle = file("./eas-build.gradle")
+def hasEasReleaseSigning = easBuildGradle.exists()
 
 gradle.taskGraph.whenReady { taskGraph ->
-    if (!hasReleaseSigning && taskGraph.allTasks.any { it.name.toLowerCase().contains('release') }) {
+    if (!hasReleaseSigning && !hasEasReleaseSigning && taskGraph.allTasks.any { it.name.toLowerCase().contains('release') }) {
         throw new GradleException('Set all RETD_RELEASE_* environment variables before building a release.')
     }
 }
@@ -196,4 +198,8 @@ dependencies {
     } else {
         implementation jscFlavor
     }
+}
+
+if (hasEasReleaseSigning) {
+    apply from: easBuildGradle
 }

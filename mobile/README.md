@@ -14,7 +14,9 @@ A record or evidence item is shown as synchronized only after server confirmatio
 
 ## Android release signing
 
-The Android release build requires an existing production keystore. Do not use the debug keystore or put signing credentials in source control. Set these environment variables in the local build terminal before running a release task:
+Android release builds require the existing production keystore. EAS builds use the project's existing remotely managed Android credentials; the native Gradle configuration applies EAS's injected signing configuration when it is present. Do not use the debug keystore or put signing credentials in source control.
+
+For local release builds only, set these environment variables in the local build terminal before running a release task:
 
 - `RETD_RELEASE_STORE_FILE`
 - `RETD_RELEASE_STORE_PASSWORD`
