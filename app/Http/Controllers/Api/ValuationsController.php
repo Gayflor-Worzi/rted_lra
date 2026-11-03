@@ -13,9 +13,11 @@ use App\Models\ValuationPropertyDescription;
 use App\Services\AssignmentEligibilityService;
 use App\Services\AuditService;
 use App\Services\PropertyRecordAccess;
+use App\Services\SyncService;
 use App\Services\TaskService;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 
 /**
@@ -36,6 +38,7 @@ class ValuationsController extends Controller
     public function __construct(
         private readonly TaskService $tasks,
         private readonly AuditService $audit,
+        private readonly SyncService $sync,
     ) {}
 
     public function index(Request $request)
@@ -123,7 +126,13 @@ class ValuationsController extends Controller
             'descriptions.*.amount' => 'nullable|numeric|min:0',
             'descriptions.*.building_age' => 'nullable|integer|min:0',
             'descriptions.*.depreciation_pct' => 'nullable|numeric|min:0|max:100',
+            'local_transaction_id' => 'nullable|string|max:80',
         ]);
+
+        $syncId = $this->sync->localId($request);
+        if ($syncId && ($replay = $this->sync->findForReplay($user->id, $syncId))) {
+            return $this->sync->replayResponse($replay, 'Valuation draft already received — no duplicate recorded.');
+        }
 
         $bill = ($data['bill_id'] ?? null) ? PropertyBill::find($data['bill_id']) : null;
 
@@ -134,67 +143,73 @@ class ValuationsController extends Controller
             }
         }
 
-        if ($discoveryId = ($data['discovery_id'] ?? null)) {
-            $discovery = PropertyDiscovery::find($discoveryId);
-            abort_if($discovery->valuation_id, 422, 'This discovery already has a linked valuation.');
-            abort_unless(
-                $discovery->decision_path === 'valuation'
-                    && in_array($discovery->status, [PropertyDiscovery::STATUS_REFERRED_VALUATION, PropertyDiscovery::STATUS_AWAITING_VALUATION], true),
-                422,
-                'This discovery is not on the valuation path and may not be pulled into a standalone assessment.'
-            );
-            $discovery->update(['status' => PropertyDiscovery::STATUS_UNDER_VALUATION]);
-        }
+        $responseData = DB::transaction(function () use ($data, $user, $bill, $syncId) {
+            if ($discoveryId = ($data['discovery_id'] ?? null)) {
+                $discovery = PropertyDiscovery::find($discoveryId);
+                abort_if($discovery->valuation_id, 422, 'This discovery already has a linked valuation.');
+                abort_unless(
+                    $discovery->decision_path === 'valuation'
+                        && in_array($discovery->status, [PropertyDiscovery::STATUS_REFERRED_VALUATION, PropertyDiscovery::STATUS_AWAITING_VALUATION], true),
+                    422,
+                    'This discovery is not on the valuation path and may not be pulled into a standalone assessment.'
+                );
+                $discovery->update(['status' => PropertyDiscovery::STATUS_UNDER_VALUATION]);
+            }
 
-        $valuation = Valuation::create([
-            'valuation_type' => $data['valuation_type'],
-            'bill_id' => $bill?->id,
-            'discovery_id' => $data['discovery_id'] ?? null,
-            'property_id' => $data['property_id'] ?? $bill?->property_id,
-            'document_number' => $data['document_number'] ?? $bill?->document_number,
-            'owner_name' => $data['owner_name'],
-            'owner_contact' => $data['owner_contact'] ?? null,
-            'tin' => $data['tin'] ?? $bill?->tin,
-            'property_classification' => $data['property_classification'] ?? $bill?->property_classification,
-            'property_address' => $data['property_address'],
-            'land_dimensions' => $data['land_dimensions'] ?? null,
-            'building_specs' => $data['building_specs'] ?? null,
-            'construction_year' => $data['construction_year'] ?? null,
-            'condition' => $data['condition'] ?? null,
-            'assessment_date' => $data['assessment_date'] ?? now()->toDateString(),
-            'declared_value' => $data['declared_value'] ?? null,
-            'reassessed_value' => $data['reassessed_value'] ?? null,
-            'annual_tax' => $data['annual_tax'] ?? null,
-            'applicable_tax_rate' => $data['applicable_tax_rate'] ?? null,
-            'other_amounts' => $data['other_amounts'] ?? null,
-            'gps_coordinate' => $data['gps_coordinate'] ?? null,
-            'gps_accuracy' => $data['gps_accuracy'] ?? null,
-            'photos' => $data['photos'] ?? null,
-            'valuation_officer_id' => $user->id,
-            'status' => Valuation::STATUS_ASSIGNED,
-            'remarks' => $data['remarks'] ?? null,
-        ], );
+            $valuation = Valuation::create([
+                'valuation_type' => $data['valuation_type'],
+                'bill_id' => $bill?->id,
+                'discovery_id' => $data['discovery_id'] ?? null,
+                'property_id' => $data['property_id'] ?? $bill?->property_id,
+                'document_number' => $data['document_number'] ?? $bill?->document_number,
+                'owner_name' => $data['owner_name'],
+                'owner_contact' => $data['owner_contact'] ?? null,
+                'tin' => $data['tin'] ?? $bill?->tin,
+                'property_classification' => $data['property_classification'] ?? $bill?->property_classification,
+                'property_address' => $data['property_address'],
+                'land_dimensions' => $data['land_dimensions'] ?? null,
+                'building_specs' => $data['building_specs'] ?? null,
+                'construction_year' => $data['construction_year'] ?? null,
+                'condition' => $data['condition'] ?? null,
+                'assessment_date' => $data['assessment_date'] ?? now()->toDateString(),
+                'declared_value' => $data['declared_value'] ?? null,
+                'reassessed_value' => $data['reassessed_value'] ?? null,
+                'annual_tax' => $data['annual_tax'] ?? null,
+                'applicable_tax_rate' => $data['applicable_tax_rate'] ?? null,
+                'other_amounts' => $data['other_amounts'] ?? null,
+                'gps_coordinate' => $data['gps_coordinate'] ?? null,
+                'gps_accuracy' => $data['gps_accuracy'] ?? null,
+                'photos' => $data['photos'] ?? null,
+                'valuation_officer_id' => $user->id,
+                'status' => Valuation::STATUS_ASSIGNED,
+                'remarks' => $data['remarks'] ?? null,
+            ]);
 
-        $this->syncDescriptions($valuation, $data['descriptions'] ?? []);
+            $this->syncDescriptions($valuation, $data['descriptions'] ?? []);
+            $this->rollupTotals($valuation);
 
-        $this->rollupTotals($valuation);
+            if ($valuation->discovery_id) {
+                $discovery = PropertyDiscovery::find($valuation->discovery_id);
+                $discovery?->update(['valuation_id' => $valuation->id, 'current_owner_id' => $user->id]);
+            }
 
-        if ($valuation->discovery_id) {
-            $discovery = PropertyDiscovery::find($valuation->discovery_id);
-            $discovery?->update(['valuation_id' => $valuation->id, 'current_owner_id' => $user->id]);
-        }
+            $this->tasks->createValuationTask($valuation, $user, $user);
+            $this->audit->record($valuation, 'valuation.created', $user->id, [], [
+                'valuation_reference' => $valuation->valuation_reference,
+                'valuation_type' => $valuation->valuation_type,
+            ]);
+            $this->tasks->notifySection('VAL', 'Valuation assigned', "Valuation {$valuation->valuation_reference} assigned to {$user->full_name}.", 'valuation');
 
-        $this->tasks->createValuationTask($valuation, $user, $user);
+            $responseData = $this->present($valuation->fresh(['valuationOfficer:id,full_name', 'descriptions', 'evidencePhotos']));
+            if ($syncId) {
+                $this->sync->record($user->id, $syncId, 'valuation', $valuation->id, $responseData);
+            }
 
-        $this->audit->record($valuation, 'valuation.created', $user->id, [], [
-            'valuation_reference' => $valuation->valuation_reference,
-            'valuation_type' => $valuation->valuation_type,
-        ]);
-
-        $this->tasks->notifySection('VAL', 'Valuation assigned', "Valuation {$valuation->valuation_reference} assigned to {$user->full_name}.", 'valuation');
+            return $responseData;
+        });
 
         return response()->json([
-            'data' => $this->present($valuation->fresh(['valuationOfficer:id,full_name', 'descriptions', 'evidencePhotos'])),
+            'data' => $responseData,
             'message' => 'Valuation assessment created.',
         ], 201);
     }

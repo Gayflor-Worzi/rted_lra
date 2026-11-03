@@ -5,6 +5,7 @@ import api from '../api'
 import { useAuth } from '../auth'
 import { fetchOfflineRead } from '../offline'
 import { can, serverMessage, isOnlineRejection } from '../rbac'
+import { useOfflineDraft } from '../useOfflineDraft'
 import { theme } from '../theme'
 import { isLandRow } from '../valuationRows'
 import { Screen, Card, InfoRow, Badge, Field, Input, Btn, ChipRow, Empty, OfflineReadStatus } from '../components'
@@ -27,6 +28,19 @@ export default function ValuationDetailScreen({ route }) {
   const [input1, setInput1] = useState('')
   const [input2, setInput2] = useState('')
   const [remarks, setRemarks] = useState('')
+  const { ready: actionDraftReady, error: actionDraftError, clear: clearActionDraft } = useOfflineDraft(
+    `valuation-action:${valuationId}`,
+    user?.id,
+    { panel, decision, input1, input2, remarks },
+    (draft) => {
+      setPanel(draft.panel ?? null)
+      setDecision(draft.decision ?? '')
+      setInput1(draft.input1 ?? '')
+      setInput2(draft.input2 ?? '')
+      setRemarks(draft.remarks ?? '')
+    },
+    !!panel && Boolean(decision || input1 || input2 || remarks),
+  )
 
   const load = useCallback(async () => {
     try {
@@ -55,12 +69,21 @@ export default function ValuationDetailScreen({ route }) {
   const refresh = async () => { setRefreshing(true); await load(); setRefreshing(false) }
 
   const runAction = async (endpoint, payload) => {
-    if (readStatus === 'cached' || readStatus === 'expired') return
+    if (!actionDraftReady) return Alert.alert('Please wait', 'The encrypted action draft is still loading.')
+    if (readStatus === 'cached' || readStatus === 'expired') {
+      return Alert.alert('Connect to submit', 'This saved action form can be edited offline, but RETD must authorize the workflow decision online. Your encrypted draft is preserved.')
+    }
     setBusy(endpoint)
     try {
       await api.post(`/valuations/${valuationId}/${endpoint}`, payload)
       setPanel(null); setDecision(''); setInput1(''); setInput2(''); setRemarks('')
-      Alert.alert('Done', 'Valuation updated.')
+      let message = 'Valuation updated.'
+      try {
+        await clearActionDraft()
+      } catch (error) {
+        message += ` The action succeeded, but its local draft could not be cleared: ${error.message}`
+      }
+      Alert.alert('Done', message)
       load()
     } catch (e) {
       if (isOnlineRejection(e)) Alert.alert('Action failed', serverMessage(e, 'The server rejected the action.'))
@@ -75,7 +98,7 @@ export default function ValuationDetailScreen({ route }) {
   }
 
   const openPanel = (key) => {
-    if (readStatus === 'cached' || readStatus === 'expired') return
+    if (!actionDraftReady || readStatus === 'cached' || readStatus === 'expired') return
     setPanel(key)
     setDecision(key === 'review' ? 'confirm_ac' : (key === 'submit' || key === 'processing' ? '' : 'approve'))
     setInput1(''); setInput2(''); setRemarks('')
@@ -86,6 +109,8 @@ export default function ValuationDetailScreen({ route }) {
     return (
       <Screen>
         <OfflineReadStatus status={readStatus} syncedAt={syncedAt} />
+        {actionDraftError ? <Text style={{ color: theme.colors.danger, marginHorizontal: 16 }}>{actionDraftError}</Text> : null}
+        {!actionDraftReady ? <Text style={{ color: theme.colors.textMuted, marginHorizontal: 16 }}>Restoring encrypted action draft…</Text> : null}
         <Card style={{ marginTop: 20 }}>
           <Text style={{ color: theme.colors.danger, fontWeight: '700', marginBottom: 8 }}>⚠ Unable to load valuation</Text>
           <Text style={{ color: theme.colors.textMuted, fontSize: 13, marginBottom: 12 }}>{err}</Text>
@@ -253,7 +278,7 @@ export default function ValuationDetailScreen({ route }) {
         </>
       )}
 
-      {readStatus !== 'cached' && readStatus !== 'expired' && panel === 'submit' && (
+      {readStatus !== 'expired' && panel === 'submit' && (
         <Card style={{ marginTop: 14 }}>
           <Text style={s.panelTitle}>Submit assessment to manager</Text>
           <Text style={s.panelSub}>Record the assessed value and recommended annual tax for the property.</Text>
@@ -275,7 +300,7 @@ export default function ValuationDetailScreen({ route }) {
         </Card>
       )}
 
-      {readStatus !== 'cached' && readStatus !== 'expired' && panel === 'reassign' && (
+      {readStatus !== 'expired' && panel === 'reassign' && (
         <Card style={{ marginTop: 14 }}>
           <Text style={s.panelTitle}>Assign / reassign officer</Text>
           <Text style={s.panelSub}>Choose an eligible Valuation Officer (eligibility is validated by the server).</Text>
@@ -301,7 +326,7 @@ export default function ValuationDetailScreen({ route }) {
         </Card>
       )}
 
-      {readStatus !== 'cached' && readStatus !== 'expired' && panel === 'review' && (
+      {readStatus !== 'expired' && panel === 'review' && (
         <Card style={{ marginTop: 14 }}>
           <Text style={s.panelTitle}>Manager review</Text>
           <View style={{ marginBottom: 10, paddingHorizontal: 16 }}>
@@ -318,7 +343,7 @@ export default function ValuationDetailScreen({ route }) {
         </Card>
       )}
 
-      {readStatus !== 'cached' && readStatus !== 'expired' && panel === 'decide' && (
+      {readStatus !== 'expired' && panel === 'decide' && (
         <Card style={{ marginTop: 14 }}>
           <Text style={s.panelTitle}>Assistant Commissioner decision</Text>
           <View style={{ marginBottom: 10, paddingHorizontal: 16 }}>
@@ -335,7 +360,7 @@ export default function ValuationDetailScreen({ route }) {
         </Card>
       )}
 
-      {readStatus !== 'cached' && readStatus !== 'expired' && panel === 'account-review' && (
+      {readStatus !== 'expired' && panel === 'account-review' && (
         <Card style={{ marginTop: 14 }}>
           <Text style={s.panelTitle}>Account &amp; Record final review</Text>
           <Text style={s.panelSub}>Approve and assign an officer to process the registration, or refer back to Valuation.</Text>
@@ -374,7 +399,7 @@ export default function ValuationDetailScreen({ route }) {
         </Card>
       )}
 
-      {readStatus !== 'cached' && readStatus !== 'expired' && panel === 'processing' && (
+      {readStatus !== 'expired' && panel === 'processing' && (
         <Card style={{ marginTop: 14 }}>
           <Text style={s.panelTitle}>Property processing result</Text>
           <Text style={s.panelSub}>Record the identifiers assigned by the source system. A valuation that comes from a discovery is processed on the discovery itself so the property bill record is written there.</Text>

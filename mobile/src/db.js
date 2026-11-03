@@ -3,6 +3,7 @@ import * as SecureStore from 'expo-secure-store'
 import * as Crypto from 'expo-crypto'
 import { Platform } from 'react-native'
 import {
+  insertOutboxBundle,
   insertOutbox,
   migrateOutboxOwnership,
   getOutboxCounts,
@@ -15,6 +16,12 @@ import {
   deleteOutboxRow,
   pruneOutbox,
 } from './outboxStore.mjs'
+import {
+  deleteDraft as deleteStoredDraft,
+  getDraft as getStoredDraft,
+  listDrafts as listStoredDrafts,
+  saveDraft as saveStoredDraft,
+} from './offlineDraftStore.mjs'
 
 let db = null
 let dbPromise = null
@@ -27,13 +34,15 @@ const SECURE_DB_NAME = 'retd_lra_encrypted.db'
 const SECURE_STORE_OPTIONS = { keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY }
 
 export const OFFLINE_CACHE_TTL_MS = {
-  dashboard: 24 * 60 * 60 * 1000,
-  tasks: 48 * 60 * 60 * 1000,
-  bills: 48 * 60 * 60 * 1000,
-  discoveries: 48 * 60 * 60 * 1000,
-  valuations: 48 * 60 * 60 * 1000,
-  notices: 48 * 60 * 60 * 1000,
-  gps: 48 * 60 * 60 * 1000,
+  dashboard: 7 * 24 * 60 * 60 * 1000,
+  tasks: 7 * 24 * 60 * 60 * 1000,
+  task_detail: 7 * 24 * 60 * 60 * 1000,
+  visits: 7 * 24 * 60 * 60 * 1000,
+  bills: 7 * 24 * 60 * 60 * 1000,
+  discoveries: 7 * 24 * 60 * 60 * 1000,
+  valuations: 7 * 24 * 60 * 60 * 1000,
+  notices: 30 * 24 * 60 * 60 * 1000,
+  gps: 7 * 24 * 60 * 60 * 1000,
   organization: 7 * 24 * 60 * 60 * 1000,
 }
 
@@ -43,6 +52,9 @@ const OFFLINE_TASK_BILL_FIELDS = [
   'bill_number',
   'document_number',
   'property_id',
+  'source_reference',
+  'source_reference_id',
+  'tin',
   'property_address',
   'tax_period',
   'property_classification',
@@ -50,6 +62,27 @@ const OFFLINE_TASK_BILL_FIELDS = [
   'gps_coordinate',
   'gps_accuracy',
   'gps_captured_at',
+]
+const OFFLINE_TASK_DETAIL_BILL_FIELDS = [
+  'id',
+  'document_number',
+  'property_id',
+  'source_reference',
+  'tin',
+  'tax_period',
+  'property_address',
+  'property_classification',
+  'property_type',
+  'delivery_status',
+  'gps_coordinate',
+  'gps_accuracy',
+  'gps_captured_at',
+  'recipient_type',
+  'recipient_name',
+  'recipient_contact',
+  'date_logged',
+  'delivery_date',
+  'remarks',
 ]
 
 // Serialize ALL statements through one promise chain. expo-sqlite's promise API
@@ -80,6 +113,8 @@ const COLUMNS_V2 = [
   ['updated_at', 'TEXT'],
   ["local_transaction_id", "TEXT NOT NULL DEFAULT ''"],
   ["parent_transaction_id", "TEXT NOT NULL DEFAULT ''"],
+  ['server_entity_id', 'TEXT'],
+  ['server_response_json', 'TEXT'],
 ]
 async function openEncryptedDatabase(key, databaseName = SECURE_DB_NAME) {
   const connection = await SQLite.openDatabaseAsync(databaseName)
@@ -280,6 +315,15 @@ export function getDb() {
           synced_at TEXT NOT NULL,
           PRIMARY KEY (module, cache_key, user_id)
         );
+
+        CREATE TABLE IF NOT EXISTS offline_drafts (
+          owner_user_id TEXT NOT NULL,
+          draft_key TEXT NOT NULL,
+          payload TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (owner_user_id, draft_key)
+        );
       `)
 
       // v1 → v2: pre-existing DBs keep the old narrower outbox table, so add the
@@ -362,6 +406,12 @@ export async function enqueueDependent(userId, kind, payload, parentTransactionI
   return enqueueRow(userId, kind, payload, parentTransactionId)
 }
 
+export async function enqueueBundle(userId, kind, payload, children = []) {
+  const id = localTxnId()
+  await enqueueDb((d) => insertOutboxBundle(d, userId, kind, payload, children, id, localTxnId))
+  return id
+}
+
 async function enqueueRow(userId, kind, payload, parentTransactionId) {
   const id = localTxnId()
   await enqueueDb((d) => insertOutbox(d, userId, kind, payload, parentTransactionId, id))
@@ -410,8 +460,8 @@ export async function outboxMarkSyncing(id, attempts, userId) {
   return enqueueDb((d) => markOutboxSyncing(d, id, attempts, userId))
 }
 
-export async function outboxMarkSynced(id, userId) {
-  return enqueueDb((d) => markOutboxSynced(d, id, userId))
+export async function outboxMarkSynced(id, userId, serverEntityId = null, serverResponse = null) {
+  return enqueueDb((d) => markOutboxSynced(d, id, userId, serverEntityId, serverResponse))
 }
 
 export async function outboxMarkFailed(id, error, userId) {
@@ -422,8 +472,8 @@ export async function outboxDelete(id, userId) {
   return enqueueDb((d) => deleteOutboxRow(d, id, userId))
 }
 
-/** Drop successfully-synced receipt rows older than `days` to keep the queue tidy. */
-export async function outboxPruneSynced(userId, days = 7) {
+/** Drop successfully-synced rows older than `days`; unsynchronized work is never pruned. */
+export async function outboxPruneSynced(userId, days = 30) {
   return enqueueDb((d) => pruneOutbox(d, userId, days))
 }
 
@@ -485,6 +535,17 @@ export async function writeReadCache(module, cacheKey, userId, payload, syncedAt
       return safeTask
     })
   }
+  if (module === 'task_detail' && payload && typeof payload === 'object') {
+    payload = { ...payload }
+    delete payload.assigned_by
+    delete payload.payments
+    delete payload.verifications
+    if (payload.bill) {
+      payload.bill = Object.fromEntries(OFFLINE_TASK_DETAIL_BILL_FIELDS
+        .filter((field) => Object.prototype.hasOwnProperty.call(payload.bill, field))
+        .map((field) => [field, payload.bill[field]]))
+    }
+  }
 
   return enqueueDb((d) => d.runAsync(
     'INSERT OR REPLACE INTO read_cache (module, cache_key, user_id, payload, synced_at) VALUES (?, ?, ?, ?, ?)',
@@ -545,4 +606,52 @@ export async function readReadCache(module, cacheKey, userId) {
       throw new Error('Offline cache data is invalid; refresh this data while online.', { cause: error })
     }
   })
+}
+
+export async function markCachedNotificationsRead(userId, notificationId = null, readAt = new Date().toISOString()) {
+  if (userId == null) throw new Error('Updating offline notices requires an authenticated user.')
+  return enqueueDb(async (d) => {
+    const rows = await d.getAllAsync(
+      "SELECT cache_key, payload FROM read_cache WHERE module = 'notices' AND user_id = ? AND payload IS NOT NULL",
+      String(userId),
+    )
+    let updated = 0
+    for (const row of rows) {
+      const notices = JSON.parse(row.payload)
+      if (!Array.isArray(notices)) continue
+      let changed = false
+      const next = notices.map((notice) => {
+        if (notificationId != null && String(notice?.id) !== String(notificationId)) return notice
+        if (notice?.read_at) return notice
+        changed = true
+        updated += 1
+        return { ...notice, read_at: readAt }
+      })
+      if (changed) {
+        await d.runAsync(
+          "UPDATE read_cache SET payload = ? WHERE module = 'notices' AND cache_key = ? AND user_id = ?",
+          JSON.stringify(next),
+          row.cache_key,
+          String(userId),
+        )
+      }
+    }
+    return updated
+  })
+}
+
+export async function saveOfflineDraft(userId, draftKey, payload) {
+  return enqueueDb((d) => saveStoredDraft(d, userId, draftKey, payload))
+}
+
+export async function getOfflineDraft(userId, draftKey) {
+  return enqueueDb((d) => getStoredDraft(d, userId, draftKey))
+}
+
+export async function listOfflineDrafts(userId) {
+  return enqueueDb((d) => listStoredDrafts(d, userId))
+}
+
+export async function deleteOfflineDraft(userId, draftKey) {
+  return enqueueDb((d) => deleteStoredDraft(d, userId, draftKey))
 }

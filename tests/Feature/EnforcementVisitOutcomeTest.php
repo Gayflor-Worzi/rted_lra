@@ -3,10 +3,13 @@
 namespace Tests\Feature;
 
 use App\Models\EnforcementVisit;
+use App\Models\PaymentVerification;
 use App\Models\PropertyBill;
+use App\Models\SyncTransaction;
 use App\Models\Task;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Storage;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
@@ -107,5 +110,59 @@ class EnforcementVisitOutcomeTest extends TestCase
 
         $this->assertSame(EnforcementVisit::DELIVERY_RETURNED, $bill->visits()->latest('id')->value('delivery_status'));
         $this->assertSame(EnforcementVisit::DELIVERY_RETURNED, $bill->fresh()->delivery_status);
+    }
+
+    public function test_offline_visit_with_payment_claim_replays_without_duplicate_claim_or_payment(): void
+    {
+        [$officer, $bill, $task] = $this->fieldTask('VISIT-OFFLINE-CLAIM');
+        Sanctum::actingAs($officer);
+        Storage::fake('local');
+        $payload = [
+            'assignment_id' => $task->id,
+            'property_bill_id' => $bill->id,
+            'status' => 'Visited - Payment Follow-up',
+            'delivery_status' => EnforcementVisit::DELIVERY_UNDELIVERED,
+            'gps_lat' => 6.3001,
+            'gps_lng' => -10.8001,
+            'claim_receipt_number' => 'REC-VISIT-OFFLINE-1',
+            'claim_amount' => 50,
+            'claim_receipt_photo' => 'data:image/jpeg;base64,ZmFrZS1yZWNlaXB0',
+            'local_transaction_id' => 'MOB-VISIT-OFFLINE-CLAIM-1',
+        ];
+
+        $first = $this->postJson('/api/v1/enforcement-visits', $payload)
+            ->assertCreated()
+            ->assertJsonPath('data.bill_id', $bill->id);
+        $replay = $this->postJson('/api/v1/enforcement-visits', $payload)
+            ->assertOk()
+            ->assertJsonPath('data.replayed', true);
+
+        $this->assertSame($first->json('data.id'), $replay->json('data.id'));
+        $this->assertSame(1, EnforcementVisit::where('bill_id', $bill->id)->count());
+        $this->assertSame(1, PaymentVerification::where('bill_id', $bill->id)->count());
+        $this->assertSame('Pending', PaymentVerification::where('bill_id', $bill->id)->value('verification_status'));
+        $this->assertSame(0, $bill->payments()->count());
+        $this->assertSame(1, SyncTransaction::where('user_id', $officer->id)
+            ->where('local_transaction_id', 'MOB-VISIT-OFFLINE-CLAIM-1')
+            ->where('entity_type', 'visit')
+            ->count());
+    }
+
+    public function test_on_the_spot_payment_claim_requires_receipt_evidence(): void
+    {
+        [$officer, $bill, $task] = $this->fieldTask('VISIT-CLAIM-NO-PHOTO');
+        Sanctum::actingAs($officer);
+
+        $this->postJson('/api/v1/enforcement-visits', [
+            'assignment_id' => $task->id,
+            'property_bill_id' => $bill->id,
+            'status' => 'Visited - Payment Follow-up',
+            'claim_receipt_number' => 'REC-VISIT-NO-PHOTO',
+            'claim_amount' => 50,
+        ])->assertUnprocessable()
+            ->assertJsonPath('message', 'Receipt evidence is required for an on-the-spot payment claim.');
+
+        $this->assertSame(0, EnforcementVisit::where('bill_id', $bill->id)->count());
+        $this->assertSame(0, PaymentVerification::where('bill_id', $bill->id)->count());
     }
 }

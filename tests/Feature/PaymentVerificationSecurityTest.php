@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\AuditLog;
 use App\Models\PaymentVerification;
 use App\Models\PropertyBill;
+use App\Models\SyncTransaction;
 use App\Models\Task;
 use App\Models\User;
 use App\Services\AuditService;
@@ -116,6 +117,38 @@ class PaymentVerificationSecurityTest extends TestCase
             'claim_id' => $claim->id,
             'bill_id' => $bill->id,
         ]);
+    }
+
+    public function test_receipt_offline_sync_replay_creates_one_pending_claim(): void
+    {
+        $officer = $this->officer();
+        Sanctum::actingAs($officer);
+        $bill = $this->bill('DOC-OFFLINE-RECEIPT', 'P-OFFLINE-RECEIPT', $officer);
+        $payload = $this->submitArray($bill->document_number, 'REC-OFFLINE-1', 1200.00)
+            + [
+                'bill_id' => $bill->id,
+                'property_id' => $bill->property_id,
+                'tin' => $bill->tin,
+                'local_transaction_id' => 'MOB-20261103-OFFLINE-RECEIPT',
+            ];
+
+        $first = $this->postJson('/api/v1/enforcement/submit-receipt', $payload)
+            ->assertCreated()
+            ->assertJsonPath('data.bill_id', $bill->id);
+        $replay = $this->postJson('/api/v1/enforcement/submit-receipt', $payload)
+            ->assertOk()
+            ->assertJsonPath('data.replayed', true);
+
+        $claimId = $first->json('data.id');
+        $this->assertSame($claimId, $replay->json('data.id'));
+        $this->assertSame(1, PaymentVerification::where('bill_id', $bill->id)->count());
+        $this->assertSame(1, SyncTransaction::where('user_id', $officer->id)
+            ->where('local_transaction_id', 'MOB-20261103-OFFLINE-RECEIPT')
+            ->where('entity_type', 'receipt')
+            ->count());
+        $this->assertSame('Pending', PaymentVerification::findOrFail($claimId)->verification_status);
+        $this->assertSame('Payment Claimed', Task::where('reference_id', $bill->id)->value('status'));
+        $this->assertSame(0, $bill->payments()->count());
     }
 
     public function test_confirm_advances_the_linked_task_and_is_idempotent(): void

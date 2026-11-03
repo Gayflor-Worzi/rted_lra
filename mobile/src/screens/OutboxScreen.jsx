@@ -12,10 +12,15 @@ import { BrandHeader, Card, Empty, Btn } from '../components'
 const KIND_META = {
   visit: { icon: '📋', label: 'Enforcement Visit', tone: theme.colors.primary },
   discovery: { icon: '📍', label: 'Property Discovery', tone: theme.colors.navy },
+  valuation: { icon: '🏷️', label: 'Valuation Draft', tone: theme.colors.navy },
   receipt: { icon: '💰', label: 'Payment Receipt', tone: theme.colors.success },
   action: { icon: '⚡', label: 'Task Action', tone: theme.colors.warning },
   evidence: { icon: '📷', label: 'Evidence Photo', tone: theme.colors.primary },
   gps_certify: { icon: '🧭', label: 'GPS Certification', tone: theme.colors.navy },
+  engagement: { icon: '📝', label: 'Field Note', tone: theme.colors.primary },
+  notification_read: { icon: '🔔', label: 'Notice Read State', tone: theme.colors.primary },
+  notification_read_all: { icon: '🔔', label: 'Notice Read State', tone: theme.colors.primary },
+  bill_amendment: { icon: '🧾', label: 'Bill Amendment Request', tone: theme.colors.warning },
 }
 
 const FILTERS = [
@@ -31,7 +36,17 @@ const STATUS_TONE = {
   failed: theme.colors.danger,
 }
 
-const STATUS_LABEL = { pending: 'Awaiting', syncing: 'Syncing', synced: 'Synced', failed: 'Failed' }
+const STATUS_LABEL = { pending: 'Pending Sync', syncing: 'Syncing', synced: 'Synced', failed: 'Sync Failed' }
+
+function statusLabel(item) {
+  if (item.kind === 'receipt' && item.status === 'synced') return 'Submitted to Server'
+  return STATUS_LABEL[item.status] || item.status
+}
+
+function statusTone(item) {
+  if (item.kind === 'receipt' && item.status === 'synced') return theme.colors.primary
+  return STATUS_TONE[item.status] || theme.colors.textLight
+}
 
 function fmtTime(t) {
   if (!t) return ''
@@ -137,7 +152,7 @@ export default function OutboxScreen() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); processOutbox({ quiet: true }).finally(() => { setRefreshing(false); load() })} } tintColor={theme.colors.primary} />}
         renderItem={({ item }) => {
           const { kind, primary, p } = metaOf(item)
-          const tone = STATUS_TONE[item.status] || theme.colors.textLight
+          const tone = statusTone(item)
           const isOpen = !!expanded[item.id]
           const busy = syncing && (item.status === 'syncing' || (item.status === 'pending' && syncing))
           return (
@@ -149,7 +164,7 @@ export default function OutboxScreen() {
                   <Text style={s.itemKind}>{kind}</Text>
                 </View>
                 <View style={[s.statusChip, { backgroundColor: tone }]}>
-                  <Text style={s.statusText}>{STATUS_LABEL[item.status] || item.status}</Text>
+                  <Text style={s.statusText}>{statusLabel(item)}</Text>
                 </View>
               </View>
 
@@ -166,6 +181,8 @@ export default function OutboxScreen() {
               {isOpen ? (
                 <View style={s.detail}>
                   <DetailRow label="Local ID" value={item.local_transaction_id || '—'} />
+                  {item.kind === 'receipt' && item.server_entity_id ? <DetailRow label="Server claim" value={item.server_entity_id} /> : null}
+                  {item.kind === 'receipt' && item.status === 'synced' ? <DetailRow label="Payment status" value="Awaiting Review — not verified or marked paid" /> : null}
                   <DetailRow label="Property / Bill" value={p.property_address || p.billing_number || p.document_number || p.bill_number || '—'} />
                   <DetailRow label="GPS" value={p.gps_coordinate || (p.gps_lat ? `${p.gps_lat}, ${p.gps_lng}` : '—')} />
                   <DetailRow label="Amount" value={p.amount != null ? `USD ${p.amount}` : '—'} />

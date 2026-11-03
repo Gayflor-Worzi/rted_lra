@@ -2,11 +2,13 @@ import { useState } from 'react'
 import { View, Text, TextInput, StyleSheet, ScrollView, Alert, ActivityIndicator, Image, TouchableOpacity, useWindowDimensions, KeyboardAvoidingView, Platform } from 'react-native'
 import * as Location from 'expo-location'
 import * as ImagePicker from 'expo-image-picker'
-import api from '../api'
 import { useAuth } from '../auth'
+import { useSync } from '../sync'
 import { can } from '../rbac'
 import { theme } from '../theme'
 import { Field, Btn, ChipRow, Card, Empty } from '../components'
+import { FIELD_EVIDENCE_LIMITS, photoToSubmission } from '../image'
+import { useOfflineDraft } from '../useOfflineDraft'
 
 import { LAND_LEVEL, descriptionInputIssues, isLandRow, rowAmount, rowDepreciationPct, rowValue, totalAssessedValue } from '../valuationRows'
 
@@ -25,6 +27,7 @@ const SUM_LABELS = { area_sqft: 'Area (sq ft)', tar: 'TAR', quantity: 'Qty', amo
 
 export default function NewValuationScreen({ navigation }) {
   const { user } = useAuth()
+  const { queueBundleAndFlush } = useSync()
   const { width } = useWindowDimensions()
   const [mode, setMode] = useState('new_property')
   const [owner, setOwner] = useState('')
@@ -50,6 +53,32 @@ export default function NewValuationScreen({ navigation }) {
   const [rows, setRows] = useState([emptyLandRow()])
   const [photos, setPhotos] = useState([])
   const [busy, setBusy] = useState(false)
+  const draftValue = {
+    mode, owner, ownerContact, tin, address, classification, landDims, buildingSpecs, constructionYear,
+    condition, assessmentDate, declaredValue, taxRate, reassessed, otherAmounts, remarks, billRef,
+    propertyRef, docRef, gps, rows, photos,
+  }
+  const { ready: draftReady, error: draftError, clear: clearDraft } = useOfflineDraft(
+    'valuation:new',
+    user?.id,
+    draftValue,
+    (draft) => {
+      for (const [key, setter] of Object.entries({
+        mode: setMode, owner: setOwner, ownerContact: setOwnerContact, tin: setTin, address: setAddress,
+        classification: setClassification, landDims: setLandDims, buildingSpecs: setBuildingSpecs,
+        constructionYear: setConstructionYear, condition: setCondition, assessmentDate: setAssessmentDate,
+        declaredValue: setDeclaredValue, taxRate: setTaxRate, reassessed: setReassessed,
+        otherAmounts: setOtherAmounts, remarks: setRemarks, billRef: setBillRef, propertyRef: setPropertyRef,
+        docRef: setDocRef, gps: setGps, rows: setRows, photos: setPhotos,
+      })) {
+        if (draft[key] !== undefined) setter(draft[key])
+      }
+    },
+    Boolean(owner || ownerContact || tin || address || classification || landDims || buildingSpecs
+      || constructionYear || condition || assessmentDate || declaredValue || taxRate || reassessed
+      || otherAmounts || remarks || billRef || propertyRef || docRef || gps || photos.length
+      || rows.some((row) => row.description || row.area_sqft || row.tar || row.building_age)),
+  )
 
   if (!can(user, 'valuation.create')) {
     return (
@@ -80,6 +109,7 @@ export default function NewValuationScreen({ navigation }) {
   }
 
   const takePhoto = async () => {
+    if (photos.length >= FIELD_EVIDENCE_LIMITS.valuationPhotos) return Alert.alert('Photo limit', `A valuation can include at most ${FIELD_EVIDENCE_LIMITS.valuationPhotos} photographs.`)
     const { status, canAskAgain } = await ImagePicker.requestCameraPermissionsAsync()
     if (status !== 'granted') {
       return Alert.alert(
@@ -90,7 +120,15 @@ export default function NewValuationScreen({ navigation }) {
       )
     }
     const res = await ImagePicker.launchCameraAsync({ quality: 0.7 })
-    if (!res.canceled) setPhotos([...photos, res.assets[0].uri])
+    if (!res.canceled) {
+      try {
+        const capturedAt = new Date().toISOString()
+        const dataUri = await photoToSubmission({ uri: res.assets[0].uri, fromCamera: true })
+        setPhotos((current) => [...current, { uri: dataUri, dataUri, fromCamera: true, capturedAt }])
+      } catch (error) {
+        Alert.alert('Photo not added', error.message)
+      }
+    }
   }
 
   const total = totalAssessedValue(rows)
@@ -99,6 +137,7 @@ export default function NewValuationScreen({ navigation }) {
     : null
 
   const submit = async () => {
+    if (!draftReady) return Alert.alert('Please wait', 'The encrypted offline draft is still loading.')
     if (!owner.trim() || !address.trim()) return Alert.alert('Missing fields', 'Owner name and property address are required.')
 
     // Negative or malformed inputs are refused here; the server refuses to submit
@@ -121,7 +160,7 @@ export default function NewValuationScreen({ navigation }) {
         depreciation_pct: rowDepreciationPct(r),
       }))
     try {
-      const r = await api.post('/valuations', {
+      const payload = {
         valuation_type: mode,
         bill_id: billRef.trim() ? Number(billRef) : undefined,
         property_id: propertyRef.trim() || undefined,
@@ -144,30 +183,44 @@ export default function NewValuationScreen({ navigation }) {
         gps_coordinate: gps ? `${gps.lat.toFixed(6)},${gps.lng.toFixed(6)}` : undefined,
         gps_accuracy: gps?.accuracy,
         descriptions,
-      })
-      const draft = r.data.data
-
-      if (photos.length > 0) {
-        await api.post('/evidence/photos', {
-          photo_type: 'PROPERTY_FULL_VIEW',
-          valuation_id: draft.id,
-          property_id: draft.property_id || undefined,
-          path: photos[0],
-          gps_coordinate: gps ? `${gps.lat.toFixed(6)},${gps.lng.toFixed(6)}` : undefined,
-        })
       }
+      const children = await Promise.all(photos.map(async (photo) => {
+        const dataUri = await photoToSubmission(photo)
+        if (!dataUri?.startsWith('data:image/')) {
+          throw new Error('The captured photo could not be prepared for safe offline storage. Retake it and try again.')
+        }
+        return {
+          kind: 'evidence',
+          parentField: 'valuation_id',
+          payload: {
+            photo_type: 'PROPERTY_FULL_VIEW',
+            data_uri: dataUri,
+            property_id: propertyRef.trim() || undefined,
+            gps_coordinate: gps ? `${gps.lat.toFixed(6)},${gps.lng.toFixed(6)}` : undefined,
+            captured_at: photo.capturedAt,
+          },
+        }
+      }))
 
-      Alert.alert('Draft saved', `Valuation ${draft.valuation_reference} created. Review the totals, then submit.`, [
+      const result = await queueBundleAndFlush('valuation', payload, children)
+      if (result.status !== 'failed') await clearDraft()
+      const message = result.status === 'failed'
+        ? `${result.lastError || 'The server rejected this valuation.'} The encrypted form draft remains available for correction.`
+        : result.allSynced
+          ? 'The valuation draft and evidence were confirmed by RETD.'
+          : 'The valuation draft and evidence are retained in encrypted offline storage. Open Sync when connected to retry or review any errors.'
+      Alert.alert(result.status === 'failed' ? 'Valuation needs correction' : result.allSynced ? 'Draft synchronized' : 'Saved for synchronization', message, [
         { text: 'OK', onPress: () => navigation.goBack() },
       ])
     } catch (e) {
-      const msg = e.response?.data?.message || e.message
-      Alert.alert('Could not save', msg)
+      Alert.alert('Could not save', e.message || 'The valuation draft was not saved.')
     } finally { setBusy(false) }
   }
 
   return (
     <View style={s.container}>
+      {draftError ? <Text style={{ color: theme.colors.danger, paddingHorizontal: 16 }}>{draftError}</Text> : null}
+      {!draftReady ? <Text style={{ color: theme.colors.textMuted, paddingHorizontal: 16 }}>Restoring encrypted valuation draft…</Text> : null}
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={Platform.OS === 'ios' ? 88 : 0}>
         <ScrollView
           contentContainerStyle={{ paddingBottom: 140, width: '100%', maxWidth: 800, alignSelf: 'center' }}
@@ -230,7 +283,7 @@ export default function NewValuationScreen({ navigation }) {
             <Field label="Evidence photo">
               <View style={{ flexDirection: 'row', gap: 10, alignItems: 'center' }}>
                 <Btn tone="outline" label="📷 Camera" onPress={takePhoto} style={{ flex: 1 }} />
-                {photos.length > 0 && <Image source={{ uri: photos[0] }} style={{ width: 56, height: 56, borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border }} />}
+                {photos.length > 0 && <Image source={{ uri: photos[0].uri }} style={{ width: 56, height: 56, borderRadius: 10, borderWidth: 1, borderColor: theme.colors.border }} />}
               </View>
             </Field>
 
@@ -351,7 +404,7 @@ export default function NewValuationScreen({ navigation }) {
               <TextInput style={[s.input, { minHeight: 60, textAlignVertical: 'top' }]} multiline placeholder="Optional" value={remarks} onChangeText={setRemarks} />
             </Field>
 
-            <Btn label={busy ? 'Saving…' : '✓ Save draft'} onPress={submit} loading={busy} style={{ marginTop: 14 }} />
+            <Btn label={busy ? 'Saving…' : '✓ Save draft'} onPress={submit} loading={busy} disabled={!draftReady} style={{ marginTop: 14 }} />
           </Card>
         </ScrollView>
       </KeyboardAvoidingView>

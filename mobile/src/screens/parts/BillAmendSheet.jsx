@@ -2,6 +2,9 @@ import { useState } from 'react'
 import { View, Text, TouchableOpacity, Modal, ScrollView, KeyboardAvoidingView, Platform } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import api from '../../api'
+import { useAuth } from '../../auth'
+import { useSync } from '../../sync'
+import { useOfflineDraft } from '../../useOfflineDraft'
 import { serverMessage } from '../../rbac'
 import { theme } from '../../theme'
 import { Btn, Badge, Input } from '../../components'
@@ -25,6 +28,8 @@ const RO = ({ label, value }) => (
  */
 export default function BillAmendSheet({ bill, onClose, onAmended, canDoc, canFin }) {
   const insets = useSafeAreaInsets()
+  const { user } = useAuth()
+  const { queueAndFlush } = useSync()
   const [docNum, setDocNum] = useState(bill?.document_number || '')
   const [interest, setInterest] = useState(bill?.interest_charged == null ? '' : String(bill.interest_charged))
   const [penalty, setPenalty] = useState(bill?.penalty_charged == null ? '' : String(bill.penalty_charged))
@@ -34,6 +39,7 @@ export default function BillAmendSheet({ bill, onClose, onAmended, canDoc, canFi
   const [done, setDone] = useState('')
   const [busy, setBusy] = useState(false)
   const [maximized, setMaximized] = useState(false)
+  const draftValue = { docNum, interest, penalty, reason }
 
   const loadHistory = async (b) => {
     try {
@@ -49,26 +55,38 @@ export default function BillAmendSheet({ bill, onClose, onAmended, canDoc, canFi
   const intChanged = canFin && Number(interest) !== Number(bill?.interest_charged ?? 0)
   const penChanged = canFin && Number(penalty) !== Number(bill?.penalty_charged ?? 0)
   const changed = docChanged || intChanged || penChanged
-  const canSubmit = bill && !busy && changed
+  const { ready: draftReady, error: draftError, clear: clearDraft } = useOfflineDraft(
+    `bill-amendment:${bill?.id}`,
+    user?.id,
+    draftValue,
+    (draft) => {
+      setDocNum(draft.docNum ?? bill?.document_number ?? '')
+      setInterest(draft.interest ?? (bill?.interest_charged == null ? '' : String(bill.interest_charged)))
+      setPenalty(draft.penalty ?? (bill?.penalty_charged == null ? '' : String(bill?.penalty_charged)))
+      setReason(draft.reason ?? '')
+    },
+    changed || !!reason,
+  )
+  const canSubmit = bill && draftReady && !busy && changed && !done
 
   const submit = async () => {
     setErr(''); setDone(''); setBusy(true)
     try {
-      const payload = { reason: reason.trim() || null }
+      const payload = { bill_id: bill.id, reason: reason.trim() || null }
       if (docChanged) payload.document_number = docNum.trim()
       if (intChanged) payload.interest_charged = Number(interest)
       if (penChanged) payload.penalty_charged = Number(penalty)
-      const r = await api.post(`/property-bills/${bill.id}/amend`, payload)
-      const res = r.data?.data?.bill || bill
-      setDone(`Bill ${res.document_number} amended · total due ${fmtMoney(res.total_tax_due)}`)
-      try {
-        const h = await api.get(`/property-bills/${res.id}/amendments`)
-        setHistory(h.data?.data?.data || h.data?.data || [])
-      } catch {}
-      if (!docChanged && !penChanged && !intChanged) {
-        setDocNum(res.document_number || '')
+      const result = await queueAndFlush('bill_amendment', payload)
+      if (result.status !== 'failed') await clearDraft()
+      const res = result.serverResponse?.bill
+      if (result.status === 'synced' && res) {
+        setDone(`Server confirmed the amendment for ${res.document_number} · total due ${fmtMoney(res.total_tax_due)}.`)
+        onAmended && onAmended(res)
+      } else {
+        setDone(result.status === 'failed'
+          ? 'Amendment request is in Sync with a server rejection. The original bill was not changed; review the error before resolving it.'
+          : 'Amendment request is saved as Pending Sync. The original bill remains unchanged until the server validates and applies it.')
       }
-      onAmended && onAmended(res)
     } catch (e) {
       setErr(serverMessage(e, 'Amendment failed.'))
     }
@@ -101,6 +119,8 @@ export default function BillAmendSheet({ bill, onClose, onAmended, canDoc, canFi
 
           <ScrollView style={maximized && st.expandedBody} contentContainerStyle={st.body} keyboardShouldPersistTaps="handled">
             {err ? <Text style={st.err}>{err}</Text> : null}
+            {draftError ? <Text style={st.err}>{draftError}</Text> : null}
+            {!draftReady ? <Text style={st.err}>Restoring encrypted amendment draft…</Text> : null}
             {done ? <Text style={st.done}>{done}</Text> : null}
 
             <View style={st.tagRow}>

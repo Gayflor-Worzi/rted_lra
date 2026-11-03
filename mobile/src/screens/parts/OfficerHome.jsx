@@ -445,7 +445,7 @@ function EnforcementCockpit({ data, kpis, onKpi, assignments, chartsOpen, onTogg
             <AssignmentCard
               key={a.id}
               item={a}
-              onOpen={assignmentReadStatus === 'cached' ? undefined : () => navigation.navigate('TaskDetail', { taskId: a.id, assignment: a })}
+              onOpen={() => navigation.navigate('TaskDetail', { taskId: a.id, assignment: a })}
               divider={i > 0}
             />
           ))

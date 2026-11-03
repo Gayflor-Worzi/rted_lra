@@ -5,6 +5,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import api from '../api'
 import { useAuth } from '../auth'
 import { fetchOfflineRead } from '../offline'
+import { markCachedNotificationsRead } from '../db'
+import { useSync } from '../sync'
 import { hasAny, serverMessage } from '../rbac'
 import { theme } from '../theme'
 import { Screen, BrandHeader, Card, Badge, Btn, OfflineReadStatus } from '../components'
@@ -28,6 +30,7 @@ export default function NoticesScreen() {
   const insets = useSafeAreaInsets()
   const navigation = useNavigation()
   const { user, canUseOfflineCache } = useAuth()
+  const { queueAndFlush } = useSync()
   const [items, setItems] = useState(null)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
@@ -68,18 +71,28 @@ export default function NoticesScreen() {
   useFocusEffect(useCallback(() => { load() }, [load]))
 
   const markRead = async (n) => {
-    if (n.read_at || readStatus === 'cached' || readStatus === 'expired') return
-    try { await api.post(`/notifications/${n.id}/read`) } catch {}
-    setItems((rows) => rows.map((x) => (x.id === n.id ? { ...x, read_at: new Date().toISOString() } : x)))
+    if (n.read_at || readStatus === 'expired') return
+    const readAt = new Date().toISOString()
+    try {
+      await queueAndFlush('notification_read', { notification_id: n.id })
+      await markCachedNotificationsRead(user.id, n.id, readAt)
+      setItems((rows) => rows.map((x) => (x.id === n.id ? { ...x, read_at: readAt } : x)))
+    } catch (cause) {
+      setError(cause?.message || 'The notice read state could not be saved locally.')
+    }
   }
 
   const markAll = async () => {
-    if (readStatus === 'cached' || readStatus === 'expired') return
+    if (readStatus === 'expired') return
     setReadBusy(true)
+    const readAt = new Date().toISOString()
     try {
-      await api.post('/notifications/read-all')
-      setItems((rows) => rows.map((x) => (x.read_at ? x : { ...x, read_at: new Date().toISOString() })))
-    } catch {}
+      await queueAndFlush('notification_read_all', {})
+      await markCachedNotificationsRead(user.id, null, readAt)
+      setItems((rows) => rows.map((x) => (x.read_at ? x : { ...x, read_at: readAt })))
+    } catch (cause) {
+      setError(cause?.message || 'Notice read states could not be saved locally.')
+    }
     finally { setReadBusy(false) }
   }
 
@@ -122,7 +135,7 @@ export default function NoticesScreen() {
         title="Notices"
         subtitle={unread > 0 ? `${unread} unread` : 'All caught up'}
         right={
-          unread > 0 && readStatus !== 'cached' ? (
+          unread > 0 && readStatus !== 'expired' ? (
             <TouchableOpacity onPress={markAll} disabled={readBusy} hitSlop={8}>
               <Text style={{ color: theme.colors.primary, fontWeight: '800', fontSize: 12.5 }}>{readBusy ? '…' : 'Mark all read'}</Text>
             </TouchableOpacity>

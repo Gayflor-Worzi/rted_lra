@@ -12,10 +12,12 @@ use App\Models\User;
 use App\Services\AssignmentEligibilityService;
 use App\Services\AuditService;
 use App\Services\SectionWorkspaceService;
+use App\Services\SyncService;
 use App\Services\TaskService;
 use App\Services\TaskWorkflowService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 
 class TaskController extends Controller
@@ -23,6 +25,7 @@ class TaskController extends Controller
     public function __construct(
         private readonly TaskWorkflowService $workflow,
         private readonly TaskService $tasks,
+        private readonly SyncService $sync,
     ) {}
 
     public function index(Request $request)
@@ -459,23 +462,38 @@ class TaskController extends Controller
             'enforcement.record_visit', 'me.view', 'payments.verify',
         ]), 403, 'Missing permission for this engagement.');
 
+        $syncId = $this->sync->localId($request);
+        if ($syncId && ($replay = $this->sync->findForReplay($user->id, $syncId))) {
+            return $this->sync->replayResponse($replay);
+        }
+
         $data = $request->validate([
             'engagement_type' => ['required', Rule::in(TaskEngagement::TYPES)],
             'outcome' => 'nullable|string|max:80',
             'notes' => 'nullable|string|max:2000',
             'occurred_at' => 'nullable|date',
+            'local_transaction_id' => 'nullable|string|max:80',
         ]);
 
-        $engagement = $task->recordEngagement(
-            $data['engagement_type'],
-            $data['outcome'] ?? null,
-            $data['notes'] ?? null,
-            $user,
-            isset($data['occurred_at']) ? Carbon::parse($data['occurred_at']) : now(),
-        );
+        $result = DB::transaction(function () use ($task, $data, $user, $syncId) {
+            $engagement = $task->recordEngagement(
+                $data['engagement_type'],
+                $data['outcome'] ?? null,
+                $data['notes'] ?? null,
+                $user,
+                isset($data['occurred_at']) ? Carbon::parse($data['occurred_at']) : now(),
+            );
+            $responseData = $this->presentEngagement($engagement->load('officer:id,full_name'));
+
+            if ($syncId) {
+                $this->sync->record($user->id, $syncId, 'engagement', (int) $engagement->id, $responseData);
+            }
+
+            return $responseData;
+        });
 
         return response()->json([
-            'data' => $this->presentEngagement($engagement->load('officer:id,full_name')),
+            'data' => $result,
             'message' => 'Engagement recorded.',
         ], 201);
     }

@@ -2,9 +2,12 @@
 
 namespace Tests\Feature;
 
+use App\Models\AuditLog;
 use App\Models\PropertyDiscovery;
 use App\Models\SyncTransaction;
+use App\Models\Task;
 use App\Models\User;
+use App\Models\Valuation;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
@@ -65,6 +68,77 @@ class SyncIdempotencySweepTest extends TestCase
         $this->assertSame(1, PropertyDiscovery::where('discovered_by', $officer->id)->count(), 'A replayed offline discovery must never duplicate.');
         $this->assertSame(1, SyncTransaction::where('user_id', $officer->id)
             ->where('local_transaction_id', 'MOB-20260922-SWEEP-D1')
+            ->count());
+    }
+
+    public function test_valuation_offline_replay_is_idempotent(): void
+    {
+        $officer = User::where('email', 'val.officer@test.lra')->firstOrFail();
+        Sanctum::actingAs($officer);
+
+        $payload = [
+            'valuation_type' => 'new_property',
+            'owner_name' => 'Offline Valuation Owner',
+            'property_address' => 'Offline Valuation Way',
+            'local_transaction_id' => 'MOB-20260922-VALUATION-REPLAY',
+            'descriptions' => [
+                ['description' => 'Land', 'level' => 'Land', 'tar' => 1500, 'quantity' => 1],
+            ],
+        ];
+
+        $first = $this->postJson('/api/v1/valuations', $payload)->assertStatus(201);
+        $replay = $this->postJson('/api/v1/valuations', $payload)
+            ->assertOk()
+            ->assertJsonPath('data.replayed', true);
+
+        $valuationId = $first->json('data.id');
+        $this->assertSame($valuationId, $replay->json('data.id'));
+        $this->assertSame(1, Valuation::where('owner_name', 'Offline Valuation Owner')->count());
+        $this->assertSame(1, Task::where('reference_type', 'valuation')->where('reference_id', $valuationId)->count());
+        $this->assertSame(1, SyncTransaction::where('user_id', $officer->id)
+            ->where('local_transaction_id', 'MOB-20260922-VALUATION-REPLAY')
+            ->where('entity_type', 'valuation')
+            ->count());
+        $this->assertSame(1, AuditLog::where('action', 'valuation.created')
+            ->where('auditable_type', Valuation::class)
+            ->where('auditable_id', $valuationId)
+            ->count());
+        $this->getJson('/api/v1/sync/transactions')
+            ->assertOk()
+            ->assertJsonPath('data.counts.valuation', 1);
+    }
+
+    public function test_task_engagement_offline_replay_is_idempotent(): void
+    {
+        $officer = $this->officer();
+        $task = Task::create([
+            'task_type' => Task::TYPE_BILL_DELIVERY,
+            'section' => 'Enforcement',
+            'assigned_to' => $officer->id,
+            'assigned_by' => $officer->id,
+            'priority' => 'Normal',
+            'status' => 'Assigned',
+        ]);
+        Sanctum::actingAs($officer);
+
+        $payload = [
+            'engagement_type' => 'follow_up',
+            'outcome' => 'no_contact',
+            'notes' => 'Attempt recorded offline.',
+            'occurred_at' => now()->toISOString(),
+            'local_transaction_id' => 'MOB-20261103-ENGAGEMENT-REPLAY',
+        ];
+
+        $first = $this->postJson("/api/v1/tasks/{$task->id}/engagements", $payload)->assertCreated();
+        $replay = $this->postJson("/api/v1/tasks/{$task->id}/engagements", $payload)
+            ->assertOk()
+            ->assertJsonPath('data.replayed', true);
+
+        $this->assertSame($first->json('data.id'), $replay->json('data.id'));
+        $this->assertSame(1, $task->engagements()->count());
+        $this->assertSame(1, SyncTransaction::where('user_id', $officer->id)
+            ->where('local_transaction_id', 'MOB-20261103-ENGAGEMENT-REPLAY')
+            ->where('entity_type', 'engagement')
             ->count());
     }
 

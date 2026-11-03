@@ -3,10 +3,12 @@ import { View, Text, TouchableOpacity, StyleSheet, Alert, ActivityIndicator, Ref
 import { useFocusEffect } from '@react-navigation/native'
 import api from '../api'
 import { useAuth } from '../auth'
+import { fetchOfflineRead } from '../offline'
 import { useSync } from '../sync'
 import { can, hasAny, serverMessage, isOnlineRejection } from '../rbac'
+import { useOfflineDraft } from '../useOfflineDraft'
 import { theme } from '../theme'
-import { Screen, Card, Badge, InfoRow, Btn, Empty, Field, Input, ChipRow } from '../components'
+import { Screen, Card, Badge, InfoRow, Btn, Empty, Field, Input, ChipRow, OfflineReadStatus } from '../components'
 
 const fm = (v) => (v === null || v === undefined ? '—' : 'US$ ' + Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }))
 const fd = (v) => (v ? String(v).slice(0, 10) : '—')
@@ -31,7 +33,7 @@ const ENG = {
 }
 
 export default function TaskDetailScreen({ navigation, route }) {
-  const { user } = useAuth()
+  const { user, canUseOfflineCache } = useAuth()
   const { queueAndFlush } = useSync()
   const { taskId, assignment } = route.params || {}
   const [detail, setDetail] = useState(null)
@@ -45,6 +47,20 @@ export default function TaskDetailScreen({ navigation, route }) {
   const [engOutcome, setEngOutcome] = useState('')
   const [engNotes, setEngNotes] = useState('')
   const [engBusy, setEngBusy] = useState(false)
+  const [readStatus, setReadStatus] = useState(null)
+  const [syncedAt, setSyncedAt] = useState(null)
+  const { ready: engagementDraftReady, error: engagementDraftError, clear: clearEngagementDraft } = useOfflineDraft(
+    `engagement:${taskId}`,
+    user?.id,
+    { engType, engOutcome, engNotes },
+    (draft) => {
+      setEngType(draft.engType ?? 'follow_up')
+      setEngOutcome(draft.engOutcome ?? '')
+      setEngNotes(draft.engNotes ?? '')
+      setShowEngage(true)
+    },
+    Boolean(engOutcome || engNotes || engType !== 'follow_up'),
+  )
 
   const loadPhotoUris = useCallback(async (evidence) => {
     if (!evidence || evidence.length === 0) return
@@ -67,11 +83,26 @@ export default function TaskDetailScreen({ navigation, route }) {
   const load = useCallback(async () => {
     if (!taskId) { setErr('No task selected.'); return }
     try {
-      const r = await api.get(`/tasks/${taskId}`)
-      setDetail(r.data.data)
-      setErr('')
+      const result = await fetchOfflineRead({
+        module: 'task_detail',
+        cacheKey: `${user?.role}:detail:${taskId}`,
+        user,
+        allowCache: canUseOfflineCache,
+        request: () => api.get(`/tasks/${taskId}`),
+        select: (response) => response.data?.data,
+        cacheCondition: (task) => String(task?.assigned_to_id) === String(user?.id),
+      })
+      if (result.status === 'expired') {
+        setDetail(null)
+        setErr('This task detail has expired from offline storage. Connect to refresh it.')
+      } else {
+        setDetail(result.data)
+        setErr('')
+      }
+      setReadStatus(result.status)
+      setSyncedAt(result.syncedAt)
     } catch (e) { setErr(serverMessage(e, 'Could not load task detail.')) }
-  }, [taskId])
+  }, [taskId, user, canUseOfflineCache])
 
   useFocusEffect(useCallback(() => { load() }, [load]))
   const refresh = async () => { setRefreshing(true); await load(); setRefreshing(false) }
@@ -85,18 +116,31 @@ export default function TaskDetailScreen({ navigation, route }) {
   const canEngage = hasAny(user, ['tasks.complete', 'tasks.assign', 'tasks.escalate', 'enforcement.record_visit', 'me.view', 'payments.verify'])
 
   const submitEngagement = async () => {
+    if (!engagementDraftReady) return Alert.alert('Please wait', 'The encrypted engagement draft is still loading.')
     setEngBusy(true)
     try {
-      await api.post(`/tasks/${taskId}/engagements`, {
+      const result = await queueAndFlush('engagement', {
+        task_id: taskId,
         engagement_type: engType,
         outcome: engOutcome.trim() || undefined,
         notes: engNotes.trim() || undefined,
+        occurred_at: new Date().toISOString(),
       })
-      setShowEngage(false); setEngOutcome(''); setEngNotes('')
-      Alert.alert('Engagement logged', `${ENG[engType] || engType} recorded against this task.`)
+      if (result.status !== 'failed') {
+        await clearEngagementDraft()
+        setShowEngage(false); setEngType('follow_up'); setEngOutcome(''); setEngNotes('')
+      }
+      Alert.alert(
+        result.status === 'failed' ? 'Engagement needs correction' : result.status === 'synced' ? 'Engagement recorded' : 'Engagement saved offline',
+        result.status === 'failed'
+          ? `${result.lastError || 'The server rejected this engagement.'} The encrypted form draft remains available for correction.`
+          : result.status === 'synced'
+            ? `${ENG[engType] || engType} recorded against this task.`
+            : `${ENG[engType] || engType} is pending synchronization and has not yet been accepted by the server.`,
+      )
       load()
     } catch (e) {
-      Alert.alert('Not logged', serverMessage(e, 'Could not record the engagement.'))
+      Alert.alert('Not saved', e?.message || serverMessage(e, 'Could not securely queue the engagement.'))
     } finally { setEngBusy(false) }
   }
 
@@ -120,9 +164,7 @@ export default function TaskDetailScreen({ navigation, route }) {
           if (isOnlineRejection(e)) {
             Alert.alert('Escalation failed', serverMessage(e, 'Could not escalate.'))
           } else {
-            await queueAndFlush('action', payload)
-            Alert.alert('Saved offline', 'Escalation is queued and will sync when online.')
-            load()
+            Alert.alert('Escalation not confirmed', 'Escalations require an online server decision. No offline escalation was queued; reconnect and check the task status before retrying.')
           }
         } finally { setBusy('') }
       } },
@@ -170,6 +212,7 @@ export default function TaskDetailScreen({ navigation, route }) {
 
   return (
     <Screen scroll refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={theme.colors.primary} />}>
+      <OfflineReadStatus status={readStatus} syncedAt={syncedAt} />
       {/* TASK INFORMATION */}
       <Card>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 }}>
@@ -359,6 +402,8 @@ export default function TaskDetailScreen({ navigation, route }) {
         <Card style={{ marginTop: 10 }}>
           <Text style={s.panelTitle}>Log an engagement</Text>
           <Text style={s.panelSub}>Record a follow-up, reminder, demand or note without a full field visit.</Text>
+          {engagementDraftError ? <Text style={{ color: theme.colors.danger, paddingHorizontal: 16 }}>{engagementDraftError}</Text> : null}
+          {!engagementDraftReady ? <Text style={{ color: theme.colors.textMuted, paddingHorizontal: 16 }}>Restoring encrypted engagement draft…</Text> : null}
           <View style={{ paddingHorizontal: 0, marginBottom: 10 }}>
             <ChipRow options={Object.keys(ENG).filter((k) => ENG[k])} value={engType} onChange={setEngType} />
           </View>
@@ -370,7 +415,7 @@ export default function TaskDetailScreen({ navigation, route }) {
           </Field>
           <View style={{ flexDirection: 'row', gap: 8 }}>
             <Btn tone="ghost" label="Cancel" style={{ flex: 1 }} onPress={() => setShowEngage(false)} disabled={engBusy} />
-            <Btn label="Log it" style={{ flex: 1 }} onPress={submitEngagement} loading={engBusy} />
+            <Btn label="Log it" style={{ flex: 1 }} onPress={submitEngagement} loading={engBusy} disabled={!engagementDraftReady} />
           </View>
         </Card>
       )}

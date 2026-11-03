@@ -5,6 +5,7 @@ import api from '../api'
 import { useAuth } from '../auth'
 import { fetchOfflineRead } from '../offline'
 import { can, serverMessage, isOnlineRejection } from '../rbac'
+import { useOfflineDraft } from '../useOfflineDraft'
 import { theme } from '../theme'
 import { Screen, Card, InfoRow, Badge, Field, Input, Btn, ChipRow, Empty, OfflineReadStatus } from '../components'
 
@@ -51,6 +52,21 @@ export default function DiscoveryDetailScreen({ route, navigation }) {
   const [remarks, setRemarks] = useState('')
   const [photoUris, setPhotoUris] = useState({})
   const [activePhoto, setActivePhoto] = useState(null)
+  const { ready: actionDraftReady, error: actionDraftError, clear: clearActionDraft } = useOfflineDraft(
+    `discovery-action:${discoveryId}`,
+    user?.id,
+    { panel, decision, input1, input2, input3, input4, remarks },
+    (draft) => {
+      setPanel(draft.panel ?? null)
+      setDecision(draft.decision ?? '')
+      setInput1(draft.input1 ?? '')
+      setInput2(draft.input2 ?? '')
+      setInput3(draft.input3 ?? '')
+      setInput4(draft.input4 ?? '')
+      setRemarks(draft.remarks ?? '')
+    },
+    !!panel && Boolean(decision || input1 || input2 || input3 || input4 || remarks),
+  )
 
   const loadPhotos = useCallback(async (photos) => {
     if (!photos || photos.length === 0) return
@@ -133,15 +149,24 @@ export default function DiscoveryDetailScreen({ route, navigation }) {
   const supportingEvidence = allEvidence.filter((e) => e.evidence_type !== 'PROPERTY_PHOTO')
 
   const runAction = async (kind, endpoint, payload) => {
-    if (readStatus === 'cached' || readStatus === 'expired') return
+    if (!actionDraftReady) return Alert.alert('Please wait', 'The encrypted action draft is still loading.')
+    if (readStatus === 'cached' || readStatus === 'expired') {
+      return Alert.alert('Connect to submit', 'This saved action form can be edited offline, but RETD must authorize the decision online. Your encrypted draft is preserved.')
+    }
     setBusy(kind)
     try {
       const r = await api.post(`/discoveries/${discoveryId}/${endpoint}`, payload)
       setPanel(null); setDecision(''); setInput1(''); setInput2(''); setInput3(''); setInput4(''); setRemarks('')
       const billed = r?.data?.data?.bill
-      Alert.alert('Done', billed
+      let message = billed
         ? `Discovery updated and bill ${billed.document_number} logged for you (${billed.tax_period ?? '—'}).`
-        : 'Discovery updated.')
+        : 'Discovery updated.'
+      try {
+        await clearActionDraft()
+      } catch (error) {
+        message += ` The action succeeded, but its local draft could not be cleared: ${error.message}`
+      }
+      Alert.alert('Done', message)
       load()
     } catch (e) {
       if (isOnlineRejection(e)) Alert.alert('Action failed', serverMessage(e, 'The server rejected the action.'))
@@ -156,7 +181,7 @@ export default function DiscoveryDetailScreen({ route, navigation }) {
   }
 
   const openPanel = (key, initialDecision = '') => {
-    if (readStatus === 'cached' || readStatus === 'expired') return
+    if (!actionDraftReady || readStatus === 'cached' || readStatus === 'expired') return
     setPanel(key); setDecision(initialDecision); setInput1(''); setInput2(''); setInput3(''); setRemarks('')
     // Registration prefills the tax from the approved assessment: that figure is
     // authoritative and the API rejects a contradicting entry.
@@ -204,6 +229,8 @@ export default function DiscoveryDetailScreen({ route, navigation }) {
   return (
     <Screen scroll refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={theme.colors.primary} />}>
       <OfflineReadStatus status={readStatus} syncedAt={syncedAt} />
+      {actionDraftError ? <Text style={{ color: theme.colors.danger, marginHorizontal: 16 }}>{actionDraftError}</Text> : null}
+      {!actionDraftReady ? <Text style={{ color: theme.colors.textMuted, marginHorizontal: 16 }}>Restoring encrypted action draft…</Text> : null}
       <Card>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 }}>
           <Text style={s.ref}>{d.discovery_reference}</Text>
@@ -379,7 +406,7 @@ export default function DiscoveryDetailScreen({ route, navigation }) {
         </>
       )}
 
-  {readStatus !== 'cached' && readStatus !== 'expired' && panel === 'acct-review' && (
+  {readStatus !== 'expired' && panel === 'acct-review' && (
     <Card style={{ marginTop: 14 }}>
       <Text style={s.panelTitle}>Account &amp; Record Manager review</Text>
       <Text style={s.panelSub}>Approve and assign an officer, return for correction, refer to valuation, or reject.</Text>
@@ -400,7 +427,7 @@ export default function DiscoveryDetailScreen({ route, navigation }) {
     </Card>
   )}
 
-  {readStatus !== 'cached' && readStatus !== 'expired' && panel === 'val-review' && (
+  {readStatus !== 'expired' && panel === 'val-review' && (
     <Card style={{ marginTop: 14 }}>
       <Text style={s.panelTitle}>Valuation Manager decision</Text>
       <Text style={s.panelSub}>Assign to a Valuation Officer, conduct it yourself, or return for correction.</Text>
@@ -424,7 +451,7 @@ export default function DiscoveryDetailScreen({ route, navigation }) {
     </Card>
   )}
 
-  {readStatus !== 'cached' && readStatus !== 'expired' && panel === 'registration' && (
+  {readStatus !== 'expired' && panel === 'registration' && (
     <Card style={{ marginTop: 14 }}>
       <Text style={s.panelTitle}>Property processing result</Text>
       <Text style={s.panelSub}>Confirming completes your Account &amp; Record Processing task and updates the property bill record (TIN {d?.tin || '—'} · {d?.owner_name || 'N/A'}). An existing bill for this TIN and tax period is updated; otherwise a new one is created.</Text>

@@ -1,13 +1,13 @@
 import { useState } from 'react'
 import { View, Text, StyleSheet, Alert, Image } from 'react-native'
 import * as ImagePicker from 'expo-image-picker'
-import api from '../api'
 import { useSync } from '../sync'
 import { useAuth } from '../auth'
-import { can, serverMessage, isOnlineRejection } from '../rbac'
+import { can } from '../rbac'
 import { theme } from '../theme'
 import { Screen, Field, Btn, Input, Card, Empty } from '../components'
-import { photoToUpload } from '../image'
+import { photoToSubmission } from '../image'
+import { useOfflineDraft } from '../useOfflineDraft'
 
 export default function ReceiptScreen({ route, navigation }) {
   const { bill } = route.params || {}
@@ -22,6 +22,21 @@ export default function ReceiptScreen({ route, navigation }) {
   const [payDate, setPayDate] = useState(new Date().toISOString().slice(0, 10))
   const [photo, setPhoto] = useState(null)
   const [busy, setBusy] = useState(false)
+  const { ready: draftReady, error: draftError, clear: clearDraft } = useOfflineDraft(
+    `receipt:${bill?.id ?? bill?.bill_number ?? 'new'}`,
+    user?.id,
+    { billNo, amount, period, receiptNo, propertyId, tin, payDate, photo },
+    (draft) => {
+      setBillNo(draft.billNo ?? bill?.bill_number ?? '')
+      setAmount(draft.amount ?? '')
+      setPeriod(draft.period ?? '')
+      setReceiptNo(draft.receiptNo ?? '')
+      setPropertyId(draft.propertyId ?? bill?.property_id ?? '')
+      setTin(draft.tin ?? bill?.tin ?? '')
+      setPayDate(draft.payDate ?? new Date().toISOString().slice(0, 10))
+      setPhoto(draft.photo ?? null)
+    },
+  )
 
   if (!can(user, 'payments.claim')) {
     return (
@@ -44,7 +59,12 @@ export default function ReceiptScreen({ route, navigation }) {
     const result = await ImagePicker.launchCameraAsync({ quality: 0.6 })
     if (!result.canceled) {
       const a = result.assets[0]
-      setPhoto({ uri: a.uri, fromCamera: true })
+      try {
+        const dataUri = await photoToSubmission({ uri: a.uri, fromCamera: true })
+        setPhoto({ uri: dataUri, dataUri, fromCamera: true })
+      } catch (error) {
+        Alert.alert('Photo not added', error.message)
+      }
     }
   }
 
@@ -54,7 +74,12 @@ export default function ReceiptScreen({ route, navigation }) {
     const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: 'images', quality: 0.6 })
     if (!result.canceled) {
       const a = result.assets[0]
-      setPhoto({ uri: a.uri, fromCamera: false })
+      try {
+        const dataUri = await photoToSubmission({ uri: a.uri, fromCamera: false })
+        setPhoto({ uri: dataUri, dataUri, fromCamera: false })
+      } catch (error) {
+        Alert.alert('Photo not added', error.message)
+      }
     }
   }
 
@@ -66,52 +91,55 @@ export default function ReceiptScreen({ route, navigation }) {
     if (!receiptNo.trim()) return Alert.alert('Required', 'Enter the receipt number.')
     if (!photo) return Alert.alert('Required', 'Capture the receipt photo.')
     setBusy(true)
-    const payload = {
-      billing_number: billNo.trim(),
-      property_id: propertyId.trim(),
-      tin: tin.trim(),
-      amount: parseFloat(amount),
-      period: period.trim() || undefined,
-      payment_date: payDate || undefined,
-      receipt_number: receiptNo.trim(),
-      receipt_photo: await photoToUpload(photo),
-    }
-    const checkDup = () =>
-      api.post('/payments/duplicate-check', {
-        receipt_number: receiptNo.trim(),
-        amount: parseFloat(amount),
-        period: period.trim() || undefined,
+    try {
+      const payload = {
+        billing_number: billNo.trim(),
         bill_id: bill?.id ?? undefined,
         property_id: propertyId.trim(),
-      })
-    // Best-effort pre-submission duplicate check. The server is the final
-    // authority and re-checks atomically on submission, so a pre-check failure
-    // (offline, timeout, API hiccup) never blocks — the submission itself (or
-    // its offline queue) decides. Only a confirmed hard block stops the claim.
-    try {
-      const dup = await checkDup()
-      if (dup?.data?.hard_block) {
-        setBusy(false)
-        return Alert.alert('Duplicate Receipt', dup.data.block_reason || 'This receipt has already been used for another payment claim.')
+        tin: tin.trim(),
+        amount: parseFloat(amount),
+        period: period.trim() || undefined,
+        payment_date: payDate || undefined,
+        receipt_number: receiptNo.trim(),
+        receipt_photo: await photoToSubmission(photo),
+        captured_at: new Date().toISOString(),
       }
-    } catch (e) {
-      // continue — the server re-checks on submission
-    }
-    try {
-      await api.post('/enforcement/submit-receipt', payload)
-      Alert.alert('Receipt submitted', 'Sent for validation by the Account & Records section.', [{ text: 'OK', onPress: () => navigation.goBack() }])
-    } catch (e) {
-      if (isOnlineRejection(e)) {
-        Alert.alert('Receipt not submitted', serverMessage(e, 'The server rejected the receipt claim.'))
+      const result = await queueAndFlush('receipt', payload)
+      let cleanupWarning = ''
+      if (result.status !== 'failed') {
+        try {
+          await clearDraft()
+        } catch (error) {
+          cleanupWarning = ` The submission was saved, but the editable draft remains: ${error.message}`
+        }
+      }
+      if (result.status === 'synced') {
+        Alert.alert(
+          'Submitted to server',
+          `Receipt claim ${result.serverEntityId ? `#${result.serverEntityId} ` : ''}was received and is awaiting account and record verification. It has not been marked paid.${cleanupWarning}`,
+          [{ text: 'OK', onPress: () => navigation.goBack() }],
+        )
       } else {
-        await queueAndFlush('receipt', payload)
-        Alert.alert('Saved offline', 'Pending Synchronization — the receipt will be verified by the Account & Records section once the device reconnects.', [{ text: 'OK', onPress: () => navigation.goBack() }])
+        const syncFailed = result.status === 'failed'
+        Alert.alert(
+          syncFailed ? 'Sync failed — retry required' : 'Pending Sync',
+          syncFailed
+            ? `${result.lastError || 'The server rejected this receipt.'} The receipt, evidence and editable encrypted form draft remain on this device; review the error in Sync, correct any details, and retry. It has not been marked paid.${cleanupWarning}`
+            : `The receipt and evidence are saved encrypted on this device and will be submitted when connectivity returns. It has not been marked paid.${cleanupWarning}`,
+          [{ text: 'OK', onPress: () => navigation.goBack() }],
+        )
       }
-    } finally { setBusy(false) }
+    } catch (error) {
+      Alert.alert('Receipt not saved', error?.message || 'The receipt and evidence could not be stored securely.')
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (
     <Screen>
+      {draftError ? <Text style={{ color: theme.colors.danger, paddingHorizontal: 16 }}>{draftError}</Text> : null}
+      {!draftReady ? <Text style={{ color: theme.colors.textMuted, paddingHorizontal: 16 }}>Restoring encrypted receipt draft…</Text> : null}
       <Card style={{ marginTop: 14 }}>
         <Text style={s.billNo}>{billNo}</Text>
         <Text style={s.addr}>{bill.property_address}</Text>
@@ -162,7 +190,7 @@ export default function ReceiptScreen({ route, navigation }) {
       </Card>
 
       <View style={{ paddingHorizontal: 16, marginTop: 6 }}>
-        <Btn label="Submit Receipt" onPress={submit} loading={busy} disabled={busy} />
+        <Btn label="Submit Receipt" onPress={submit} loading={busy} disabled={busy || !draftReady} />
       </View>
     </Screen>
   )

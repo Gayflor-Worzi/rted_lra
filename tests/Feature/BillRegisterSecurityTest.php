@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\PropertyBill;
+use App\Models\SyncTransaction;
 use App\Models\User;
 use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -124,6 +125,38 @@ class BillRegisterSecurityTest extends TestCase
             'new_penalty_charge' => 900.00,
             'new_document_number' => null,
         ]);
+    }
+
+    public function test_offline_amendment_replay_applies_and_audits_the_change_once(): void
+    {
+        $manager = $this->accountManager();
+        Sanctum::actingAs($manager);
+        $bill = $this->postJson('/api/v1/property-bills', $this->logPayload('2026/1012', 'P-OFFLINE-AMEND'))
+            ->assertCreated()
+            ->json('data');
+        $payload = [
+            'penalty_charged' => 700.00,
+            'reason' => 'Field amendment prepared offline.',
+            'local_transaction_id' => 'MOB-20261103-BILL-AMENDMENT',
+        ];
+
+        $first = $this->postJson("/api/v1/property-bills/{$bill['id']}/amend", $payload)
+            ->assertOk()
+            ->assertJsonPath('data.bill.penalty_charged', '700.00');
+        $replay = $this->postJson("/api/v1/property-bills/{$bill['id']}/amend", $payload)
+            ->assertOk()
+            ->assertJsonPath('data.replayed', true);
+
+        $this->assertSame($first->json('data.bill.id'), $replay->json('data.bill.id'));
+        $this->assertSame(1, \App\Models\BillAmendment::where('bill_id', $bill['id'])->count());
+        $this->assertSame(1, \App\Models\AuditLog::where('auditable_type', (new PropertyBill)->getMorphClass())
+            ->where('auditable_id', $bill['id'])
+            ->where('action', 'bill.amended')
+            ->count());
+        $this->assertSame(1, SyncTransaction::where('user_id', $manager->id)
+            ->where('local_transaction_id', 'MOB-20261103-BILL-AMENDMENT')
+            ->where('entity_type', 'bill_amendment')
+            ->count());
     }
 
     public function test_database_unique_backstop_blocks_raw_duplicate_insert(): void

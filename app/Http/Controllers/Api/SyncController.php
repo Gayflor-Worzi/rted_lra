@@ -16,8 +16,11 @@ class SyncController extends Controller
         'tasks.view_own',
         'enforcement.record_visit',
         'discovery.create',
+        'valuation.create',
         'payments.claim',
         'enforcement.upload_evidence',
+        'bills.amend_document',
+        'bills.amend_penalty_interest',
     ];
 
     public function transactions(Request $request)
@@ -44,8 +47,11 @@ class SyncController extends Controller
                 'counts' => [
                     'visit' => SyncTransaction::where('user_id', $user->id)->where('entity_type', 'visit')->count(),
                     'discovery' => SyncTransaction::where('user_id', $user->id)->where('entity_type', 'discovery')->count(),
+                    'valuation' => SyncTransaction::where('user_id', $user->id)->where('entity_type', 'valuation')->count(),
                     'receipt' => SyncTransaction::where('user_id', $user->id)->where('entity_type', 'receipt')->count(),
                     'action' => SyncTransaction::where('user_id', $user->id)->where('entity_type', 'action')->count(),
+                    'engagement' => SyncTransaction::where('user_id', $user->id)->where('entity_type', 'engagement')->count(),
+                    'bill_amendment' => SyncTransaction::where('user_id', $user->id)->where('entity_type', 'bill_amendment')->count(),
                 ],
                 'transactions' => $rows,
             ],

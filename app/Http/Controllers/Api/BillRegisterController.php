@@ -10,9 +10,11 @@ use App\Models\User;
 use App\Services\AssignmentEligibilityService;
 use App\Services\AuditService;
 use App\Services\BillScopeService;
+use App\Services\SyncService;
 use App\Services\TaskService;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 
 /**
@@ -24,6 +26,7 @@ class BillRegisterController extends Controller
     public function __construct(
         private readonly TaskService $tasks,
         private readonly AuditService $audit,
+        private readonly SyncService $sync,
     ) {}
 
     public function index(Request $request)
@@ -330,13 +333,20 @@ class BillRegisterController extends Controller
             'Missing permission: bills.amend_document or bills.amend_penalty_interest'
         );
 
+        $syncId = $this->sync->localId($request);
+        if ($syncId && ($replay = $this->sync->findForReplay($user->id, $syncId))) {
+            return $this->sync->replayResponse($replay, 'Amendment request already received; no duplicate applied.');
+        }
+
         $data = $request->validate([
             'document_number' => ['sometimes', 'string', 'max:80', Rule::unique('property_bills', 'document_number')->ignore($property_bill->id)],
             'penalty_charged' => ['sometimes', 'numeric', 'min:0'],
             'interest_charged' => ['sometimes', 'numeric', 'min:0'],
             'reason' => ['nullable', 'string', 'max:2000'],
+            'local_transaction_id' => 'nullable|string|max:80',
         ]);
 
+        $responseData = DB::transaction(function () use ($data, $user, $property_bill, $syncId) {
         // Enforce per-field permission
         $docChanged = isset($data['document_number']) && $data['document_number'] !== $property_bill->document_number;
         $penaltyChanged = array_key_exists('penalty_charged', $data) && (float) $data['penalty_charged'] !== (float) $property_bill->penalty_charged;
@@ -406,11 +416,19 @@ class BillRegisterController extends Controller
             'total_tax_due' => (float) $property_bill->total_tax_due,
         ]);
 
-        return response()->json([
-            'data' => [
+            $result = [
                 'bill' => $this->present($property_bill),
                 'amendment' => BillAmendment::latest()->where('bill_id', $property_bill->id)->first(),
-            ],
+            ];
+            if ($syncId) {
+                $this->sync->record($user->id, $syncId, 'bill_amendment', (int) $property_bill->id, $result);
+            }
+
+            return $result;
+        });
+
+        return response()->json([
+            'data' => $responseData,
             'message' => 'Bill amended successfully.',
         ]);
     }

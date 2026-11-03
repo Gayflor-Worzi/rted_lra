@@ -44,6 +44,23 @@ export async function insertOutbox(db, userId, kind, payload, parentTransactionI
   )
 }
 
+export async function insertOutboxBundle(db, userId, kind, payload, children, localTransactionId, createTransactionId) {
+  const ownerId = requireOwner(userId)
+  await db.withTransactionAsync(async () => {
+    await insertOutbox(db, ownerId, kind, payload, '', localTransactionId)
+    for (const child of children) {
+      await insertOutbox(
+        db,
+        ownerId,
+        child.kind,
+        { ...child.payload, _parent_field: child.parentField },
+        localTransactionId,
+        createTransactionId(),
+      )
+    }
+  })
+}
+
 export async function getOutboxCounts(db, userId) {
   const ownerId = requireOwner(userId)
   const rows = await db.getAllAsync(
@@ -107,10 +124,12 @@ export async function markOutboxSyncing(db, id, attempts, userId) {
   return result.changes > 0
 }
 
-export async function markOutboxSynced(db, id, userId) {
+export async function markOutboxSynced(db, id, userId, serverEntityId = null, serverResponse = null) {
   const ownerId = requireOwner(userId)
   const result = await db.runAsync(
-    "UPDATE outbox SET status = 'synced', last_error = NULL, synced_at = datetime('now'), updated_at = datetime('now') WHERE id = ? AND owner_user_id = ?",
+    "UPDATE outbox SET status = 'synced', server_entity_id = ?, server_response_json = ?, last_error = NULL, synced_at = datetime('now'), updated_at = datetime('now') WHERE id = ? AND owner_user_id = ?",
+    serverEntityId == null ? null : String(serverEntityId),
+    serverResponse == null ? null : JSON.stringify(serverResponse),
     id,
     ownerId,
   )

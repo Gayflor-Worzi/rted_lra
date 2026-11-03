@@ -2,14 +2,13 @@ import { useState } from 'react'
 import { View, Text, TouchableOpacity, StyleSheet, Alert, Image } from 'react-native'
 import * as Location from 'expo-location'
 import * as ImagePicker from 'expo-image-picker'
-import NetInfo from '@react-native-community/netinfo'
-import api from '../api'
 import { useSync } from '../sync'
-import { can, serverMessage, isOnlineRejection } from '../rbac'
+import { can } from '../rbac'
 import { useAuth } from '../auth'
 import { theme } from '../theme'
 import { Screen, Field, Btn, Input, Card, ChipRow, Empty } from '../components'
-import { photoToUpload } from '../image'
+import { FIELD_EVIDENCE_LIMITS, photoToSubmission } from '../image'
+import { useOfflineDraft } from '../useOfflineDraft'
 
 const PROPERTY_CLASSIFICATIONS = [
   'Residential',
@@ -28,7 +27,7 @@ const PROPERTY_TYPES = ['New Property', 'Existing Property']
 const A = (set) => (v) => set(v ?? '')
 
 export default function NewDiscoveryScreen({ navigation }) {
-  const { enqueue, enqueueDependent, processOutbox } = useSync()
+  const { queueBundleAndFlush } = useSync()
   const { user } = useAuth()
 
   const [ownerName, setOwnerName] = useState('')
@@ -53,6 +52,45 @@ export default function NewDiscoveryScreen({ navigation }) {
   const [proof, setProof] = useState(null) // proof of ownership (optional)
   const [locating, setLocating] = useState(false)
   const [busy, setBusy] = useState(false)
+  const draftValue = {
+    ownerName, ownerContact, tin, address, county, district, cityTown, community, street, houseNumber,
+    classification, propertyType, occupancyUse, description, gpsLat, gpsLng, gpsAccuracy,
+    discoveryDate, photos, proof,
+  }
+  const { ready: draftReady, error: draftError, clear: clearDraft } = useOfflineDraft(
+    'discovery:new',
+    user?.id,
+    draftValue,
+    (draft) => {
+      for (const [key, setter] of Object.entries({
+        ownerName: setOwnerName,
+        ownerContact: setOwnerContact,
+        tin: setTin,
+        address: setAddress,
+        county: setCounty,
+        district: setDistrict,
+        cityTown: setCityTown,
+        community: setCommunity,
+        street: setStreet,
+        houseNumber: setHouseNumber,
+        classification: setClassification,
+        propertyType: setPropertyType,
+        occupancyUse: setOccupancyUse,
+        description: setDescription,
+        gpsLat: setGpsLat,
+        gpsLng: setGpsLng,
+        gpsAccuracy: setGpsAccuracy,
+        discoveryDate: setDiscoveryDate,
+        photos: setPhotos,
+        proof: setProof,
+      })) {
+        if (draft[key] !== undefined) setter(draft[key])
+      }
+    },
+    Boolean(ownerName || ownerContact || tin || address || county || district || cityTown || community
+      || street || houseNumber || classification || propertyType || occupancyUse || description
+      || gpsLat || gpsLng || gpsAccuracy || photos.length || proof),
+  )
 
   const useMyLocation = async () => {
     setLocating(true)
@@ -91,19 +129,37 @@ export default function NewDiscoveryScreen({ navigation }) {
   }
 
   const takePhoto = async () => {
+    if (photos.length >= FIELD_EVIDENCE_LIMITS.discoveryPhotos) return Alert.alert('Photo limit', `A discovery can include at most ${FIELD_EVIDENCE_LIMITS.discoveryPhotos} property photographs.`)
     if (!(await requireCamera())) return
     const result = await ImagePicker.launchCameraAsync({ quality: 0.6 })
     if (!result.canceled) {
       const a = result.assets[0]
-      setPhotos((p) => [...p, { uri: a.uri, fromCamera: true }])
+      try {
+        const dataUri = await photoToSubmission({ uri: a.uri, fromCamera: true })
+        setPhotos((p) => [...p, { uri: dataUri, dataUri, fromCamera: true, capturedAt: new Date().toISOString() }])
+      } catch (error) {
+        Alert.alert('Photo not added', error.message)
+      }
     }
   }
 
   const uploadPhoto = async () => {
+    const remaining = FIELD_EVIDENCE_LIMITS.discoveryPhotos - photos.length
+    if (remaining <= 0) return Alert.alert('Photo limit', `A discovery can include at most ${FIELD_EVIDENCE_LIMITS.discoveryPhotos} property photographs.`)
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync()
     if (status !== 'granted') return Alert.alert('Permission', 'Gallery access required to attach photos.')
-    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: 'images', quality: 0.6, allowsMultipleSelection: true })
-    if (!result.canceled) setPhotos((p) => [...p, ...result.assets.map((a) => ({ uri: a.uri, fromCamera: false }))])
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: 'images', quality: 0.6, allowsMultipleSelection: true, selectionLimit: remaining })
+    if (!result.canceled) {
+      try {
+        const selected = await Promise.all(result.assets.map(async (asset) => {
+          const dataUri = await photoToSubmission({ uri: asset.uri, fromCamera: false })
+          return { uri: dataUri, dataUri, fromCamera: false, capturedAt: new Date().toISOString() }
+        }))
+        setPhotos((p) => [...p, ...selected].slice(0, FIELD_EVIDENCE_LIMITS.discoveryPhotos))
+      } catch (error) {
+        Alert.alert('Photo not added', error.message)
+      }
+    }
   }
 
   const removePhoto = (i) => setPhotos((p) => p.filter((_, x) => x !== i))
@@ -113,7 +169,12 @@ export default function NewDiscoveryScreen({ navigation }) {
     const result = await ImagePicker.launchCameraAsync({ quality: 0.6 })
     if (!result.canceled) {
       const a = result.assets[0]
-      setProof({ uri: a.uri, fromCamera: true })
+      try {
+        const dataUri = await photoToSubmission({ uri: a.uri, fromCamera: true })
+        setProof({ uri: dataUri, dataUri, fromCamera: true, capturedAt: new Date().toISOString() })
+      } catch (error) {
+        Alert.alert('Proof not added', error.message)
+      }
     }
   }
 
@@ -123,12 +184,18 @@ export default function NewDiscoveryScreen({ navigation }) {
     const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: 'images', quality: 0.6 })
     if (!result.canceled) {
       const a = result.assets[0]
-      setProof({ uri: a.uri, fromCamera: false })
+      try {
+        const dataUri = await photoToSubmission({ uri: a.uri, fromCamera: false })
+        setProof({ uri: dataUri, dataUri, fromCamera: false, capturedAt: new Date().toISOString() })
+      } catch (error) {
+        Alert.alert('Proof not added', error.message)
+      }
     }
   }
 
   const submit = async () => {
     if (!address && !gpsLat && !gpsLng) return Alert.alert('Required', 'Enter a property address or GPS coordinates.')
+    if (!draftReady) return Alert.alert('Please wait', 'The encrypted offline draft is still loading.')
     setBusy(true)
     const payload = {
       owner_name: ownerName.trim() || undefined,
@@ -152,56 +219,53 @@ export default function NewDiscoveryScreen({ navigation }) {
       gps_captured_at: gpsLat && gpsLng ? new Date().toISOString() : undefined,
       discovery_date: discoveryDate || undefined,
     }
-const shotBody = async (shot, type, extra = {}) => ({
-  photo_type: type,
-  data_uri: await photoToUpload(shot),
-  gps_lat: payload.gps_lat,
-  gps_lng: payload.gps_lng,
-  ...extra,
-})
     try {
-      const r = await api.post('/discoveries', payload)
-      const d = r.data?.data || {}
-      const id = d.id
-      let attached = 0
-      for (const shot of photos) {
-        try {
-          await api.post('/evidence/photos', await shotBody(shot, 'PROPERTY_FULL_VIEW', { discovery_id: id }))
-          attached++
-        } catch { /* a photo that fails is not fatal — it can be re-added later */ }
-      }
-      if (proof) {
-        try {
-          await api.post('/evidence/photos', await shotBody(proof, 'OTHER', { discovery_id: id, remarks: 'Proof of ownership (optional)' }))
-        } catch { /* optional proof of ownership; non-fatal */ }
-      }
-      Alert.alert('Discovery recorded', `${d.discovery_reference || 'Record'} registered — ${attached} of ${photos.length} photo(s) attached.`, [
-        { text: 'OK', onPress: () => navigation.goBack() },
-      ])
-    } catch (ex) {
-      if (isOnlineRejection(ex)) {
-        Alert.alert('Not recorded', serverMessage(ex, 'The server rejected the discovery.'))
-      } else {
-        // Offline: queue the discovery with its photos. The photo rows carry a
-        // parent link so the syncer attaches them only after the discovery has
-        // synced and returned its server id — no field photo is lost.
-        const txnId = await enqueue('discovery', payload)
-        for (const shot of photos) {
-          await enqueueDependent('evidence', await shotBody(shot, 'PROPERTY_FULL_VIEW'), txnId)
-        }
-        if (proof) {
-          await enqueueDependent('evidence', await shotBody(proof, 'OTHER', { remarks: 'Proof of ownership (optional)' }), txnId)
-        }
-        const net = await NetInfo.fetch()
-        if (net.isConnected) await processOutbox()
-        Alert.alert('Saved offline', `Discovery queued with ${photos.length} photo(s) — they will sync when you are online.`, [{ text: 'OK', onPress: () => navigation.goBack() }])
-      }
+      const children = [
+        ...photos.map((shot) => ({
+          kind: 'evidence',
+          parentField: 'discovery_id',
+          payload: {
+            photo_type: 'PROPERTY_FULL_VIEW',
+            data_uri: shot.dataUri,
+            gps_lat: payload.gps_lat,
+            gps_lng: payload.gps_lng,
+            captured_at: shot.capturedAt,
+          },
+        })),
+        ...(proof ? [{
+          kind: 'evidence',
+          parentField: 'discovery_id',
+          payload: {
+            photo_type: 'OTHER',
+            data_uri: proof.dataUri,
+            gps_lat: payload.gps_lat,
+            gps_lng: payload.gps_lng,
+            captured_at: proof.capturedAt,
+            remarks: 'Proof of ownership (optional)',
+          },
+        }] : []),
+      ]
+      const result = await queueBundleAndFlush('discovery', payload, children)
+      if (result.status !== 'failed') await clearDraft()
+      Alert.alert(
+        result.status === 'synced' && result.allSynced ? 'Discovery submitted' : result.status === 'failed' ? 'Sync failed — review required' : 'Pending Sync',
+        result.status === 'synced' && result.allSynced
+          ? 'The discovery and all selected evidence were confirmed by the server.'
+          : result.status === 'failed'
+            ? `The discovery and evidence remain in Sync for review or retry. ${result.lastError || ''}`
+            : `The discovery and its ${children.length} evidence file(s) are saved together in encrypted offline storage and will sync when online.`,
+        [{ text: 'OK', onPress: () => navigation.goBack() }],
+      )
+    } catch (error) {
+      Alert.alert('Not saved', error?.message || 'The discovery and evidence could not be stored securely.')
     } finally { setBusy(false) }
   }
 
   if (!can(user, 'discovery.create')) {
     return (
       <Screen>
+        {draftError ? <Text style={{ color: theme.colors.danger, paddingHorizontal: 16 }}>{draftError}</Text> : null}
+        {!draftReady ? <Text style={{ color: theme.colors.textMuted, paddingHorizontal: 16 }}>Restoring encrypted discovery draft…</Text> : null}
         <Empty icon="??" title="No access" sub="Your role does not include permission to record property discoveries." />
       </Screen>
     )

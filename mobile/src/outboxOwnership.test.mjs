@@ -8,10 +8,13 @@ import {
   getOutboxRows,
   hasSyncIdentity,
   insertOutbox,
+  insertOutboxBundle,
   markOutboxFailed,
   markOutboxPending,
   markOutboxSyncing,
+  markOutboxSynced,
   migrateOutboxOwnership,
+  pruneOutbox,
 } from './outboxStore.mjs'
 
 describe('offline outbox account isolation', () => {
@@ -33,6 +36,8 @@ describe('offline outbox account isolation', () => {
         updated_at TEXT,
         local_transaction_id TEXT NOT NULL DEFAULT '',
         parent_transaction_id TEXT NOT NULL DEFAULT '',
+        server_entity_id TEXT,
+        server_response_json TEXT,
         owner_user_id TEXT
       );
     `)
@@ -44,6 +49,17 @@ describe('offline outbox account isolation', () => {
       execAsync: async (sql) => connection.exec(sql),
       getFirstAsync: async (sql, ...args) => connection.prepare(sql).get(...args) || null,
       getAllAsync: async (sql, ...args) => connection.prepare(sql).all(...args),
+      withTransactionAsync: async (callback) => {
+        connection.exec('BEGIN')
+        try {
+          const result = await callback()
+          connection.exec('COMMIT')
+          return result
+        } catch (error) {
+          connection.exec('ROLLBACK')
+          throw error
+        }
+      },
     }
   })
 
@@ -78,6 +94,24 @@ describe('offline outbox account isolation', () => {
     assert.equal(failed.attempts, 1)
   })
 
+  it('records server confirmation without pruning unsynchronized submissions', async () => {
+    await insertOutbox(db, 'user-a', 'receipt', { receipt_number: 'REC-1' }, '', 'TX-RECEIPT')
+    await insertOutbox(db, 'user-a', 'visit', { notes: 'pending visit' }, '', 'TX-VISIT')
+
+    assert.equal(await markOutboxSynced(db, 1, 'user-a', 42, { id: 42, status: 'Pending' }), true)
+    const submitted = await getOutboxRow(db, 1, 'user-a')
+    assert.equal(submitted.status, 'synced')
+    assert.equal(submitted.server_entity_id, '42')
+    assert.deepEqual(JSON.parse(submitted.server_response_json), { id: 42, status: 'Pending' })
+
+    await db.runAsync("UPDATE outbox SET synced_at = datetime('now', '-31 days') WHERE id = ?", 1)
+    await db.runAsync("UPDATE outbox SET created_at = datetime('now', '-31 days') WHERE id = ?", 2)
+    await pruneOutbox(db, 'user-a', 30)
+
+    assert.equal(await getOutboxRow(db, 1, 'user-a'), null)
+    assert.equal((await getOutboxRow(db, 2, 'user-a')).status, 'pending')
+  })
+
   it('does not allow unauthenticated access or a dependent submission from another account', async () => {
     await insertOutbox(db, 'user-a', 'discovery', {}, '', 'TX-PARENT')
 
@@ -92,6 +126,32 @@ describe('offline outbox account isolation', () => {
     await insertOutbox(db, 'user-a', 'evidence', {}, 'TX-PARENT', 'TX-CHILD-A')
     assert.equal((await getOutboxRows(db, 'user-a')).length, 2)
     assert.equal((await getOutboxRows(db, 'user-b')).length, 0)
+  })
+
+  it('queues a valuation and dependent evidence atomically for one account', async () => {
+    await insertOutboxBundle(db, 'user-a', 'valuation', { owner_name: 'Offline owner' }, [{
+      kind: 'evidence',
+      parentField: 'valuation_id',
+      payload: { data_uri: 'data:image/jpeg;base64,ZmFrZQ==' },
+    }], 'TX-VALUATION', () => 'TX-EVIDENCE')
+
+    const rows = await getOutboxRows(db, 'user-a')
+    assert.equal(rows.length, 2)
+    assert.equal(rows[0].kind, 'valuation')
+    assert.equal(rows[1].kind, 'evidence')
+    assert.equal(rows[1].parent_transaction_id, 'TX-VALUATION')
+    assert.equal(JSON.parse(rows[1].payload)._parent_field, 'valuation_id')
+    assert.equal(rows.every((row) => row.owner_user_id === 'user-a'), true)
+  })
+
+  it('rolls back the entire offline bundle if a child cannot be queued', async () => {
+    await assert.rejects(insertOutboxBundle(db, 'user-a', 'valuation', { owner_name: 'Offline owner' }, [{
+      kind: 'evidence',
+      parentField: 'valuation_id',
+      payload: { data_uri: 'data:image/jpeg;base64,ZmFrZQ==' },
+    }], 'TX-ROLLBACK', () => { throw new Error('transaction id unavailable') }))
+
+    assert.deepEqual(await getOutboxRows(db, 'user-a'), [])
   })
 
   it('quarantines legacy unowned rows without deleting or transferring them', async () => {

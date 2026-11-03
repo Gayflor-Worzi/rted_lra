@@ -1,15 +1,18 @@
 import { useCallback, useState } from 'react'
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, ActivityIndicator, Linking } from 'react-native'
 import * as Location from 'expo-location'
+import * as Crypto from 'expo-crypto'
+import NetInfo from '@react-native-community/netinfo'
 import { useFocusEffect } from '@react-navigation/native'
 import api from '../api'
 import { useSync } from '../sync'
 import { useAuth } from '../auth'
 import { fetchOfflineRead } from '../offline'
-import { hasAll, serverMessage } from '../rbac'
+import { can, hasAll, serverMessage } from '../rbac'
 import { theme } from '../theme'
 import { Screen, Card, Btn, Field, InfoRow, OfflineReadStatus } from '../components'
-import { outboxById } from '../db'
+import { outboxById, saveOfflineDraft } from '../db'
+import { useOfflineDraft } from '../useOfflineDraft'
 
 const fmt = (v, d = 7) => (v === null || v === undefined ? '—' : Number(v).toFixed(d))
 const dateTime = (v) => (v ? new Date(v).toLocaleString() : '—')
@@ -35,8 +38,10 @@ export default function GpsCertifyScreen({ navigation }) {
   const [locating, setLocating] = useState(false)
   const [permission, setPermission] = useState('not checked')
   const [gps, setGps] = useState(null)
+  const [gpsPropertyId, setGpsPropertyId] = useState(null)
   const [attachVisit, setAttachVisit] = useState(null)
   const [remarks, setRemarks] = useState('')
+  const [submissionTransactionId, setSubmissionTransactionId] = useState(null)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
   const [messageTone, setMessageTone] = useState(theme.colors.textMuted)
@@ -45,6 +50,21 @@ export default function GpsCertifyScreen({ navigation }) {
   const [submissionsError, setSubmissionsError] = useState('')
   const [submissionReadStatus, setSubmissionReadStatus] = useState(null)
   const [submissionSyncedAt, setSubmissionSyncedAt] = useState(null)
+  const { ready: draftReady, error: draftError, clear: clearDraft } = useOfflineDraft(
+    'gps-certify:capture',
+    user?.id,
+    { propertyId, gps, gpsPropertyId, attachVisit, remarks, submissionTransactionId },
+    (draft) => {
+      setPropertyId(draft.propertyId ?? '')
+      setGps(draft.gps ?? null)
+      setGpsPropertyId(draft.gpsPropertyId ?? null)
+      setAttachVisit(draft.attachVisit ?? null)
+      setRemarks(draft.remarks ?? '')
+      setSubmissionTransactionId(draft.submissionTransactionId ?? null)
+      setVerifiedProperty(false)
+    },
+    Boolean(gps || remarks || attachVisit || submissionTransactionId),
+  )
 
   const loadSubmissions = useCallback(async (pid) => {
     if (!pid) return
@@ -92,17 +112,23 @@ export default function GpsCertifyScreen({ navigation }) {
   }, [ctx?.property_id, loadSubmissions, syncState?.outboxId]))
 
   const loadContext = async () => {
+    if (!draftReady) return Alert.alert('Please wait', 'The encrypted GPS capture draft is still loading.')
     const pid = propertyId.trim()
     if (!pid) return Alert.alert('Property required', 'Enter a property ID to load its verified property record.')
+    const sameCapture = gpsPropertyId === pid
     setCtx(null)
     setContextSource(null)
     setVerifiedProperty(false)
-    setGps(null)
-    setAttachVisit(null)
-    setRemarks('')
+    if (!sameCapture) {
+      setGps(null)
+      setGpsPropertyId(null)
+      setAttachVisit(null)
+      setRemarks('')
+      setSubmissionTransactionId(null)
+    }
     setSubmissions([])
     setSubmissionReadStatus(null)
-    setSyncState(null)
+    if (!sameCapture) setSyncState(null)
     setMessage('')
     setLoading(true)
     try {
@@ -129,7 +155,7 @@ export default function GpsCertifyScreen({ navigation }) {
       setContextSource(result.status)
       setContextSyncedAt(result.syncedAt)
       if (result.status === 'cached') {
-        setMessage('Showing the encrypted offline copy. Connect to verify this property before capturing or submitting GPS.')
+        setMessage('Showing the encrypted offline property copy. Confirm the property identity before capturing; the server will re-check before accepting this pending certification.')
         setMessageTone(theme.colors.warning)
       }
       await loadSubmissions(pid)
@@ -144,6 +170,7 @@ export default function GpsCertifyScreen({ navigation }) {
   }
 
   const getGps = async () => {
+    if (!draftReady) return Alert.alert('Please wait', 'The encrypted GPS capture draft is still loading.')
     setLocating(true)
     setMessage('')
     try {
@@ -163,6 +190,8 @@ export default function GpsCertifyScreen({ navigation }) {
         accuracy: location.coords.accuracy,
         at: new Date(location.timestamp || Date.now()).toISOString(),
       })
+      setGpsPropertyId(ctx?.property_id || null)
+      setSubmissionTransactionId(null)
       setSyncState(null)
       setMessage('GPS location captured. Review the property and coordinates before submitting.')
       setMessageTone(theme.colors.success)
@@ -176,7 +205,8 @@ export default function GpsCertifyScreen({ navigation }) {
 
   const submit = (decision) => {
     if (!canCertify) return Alert.alert('Not permitted', 'Your role does not allow GPS certification.')
-    if (!ctx || !contextIsLive || !verifiedProperty || ctx.property_id !== propertyId.trim()) {
+    if (!draftReady) return Alert.alert('Please wait', 'The encrypted GPS capture draft is still loading.')
+    if (!ctx || !contextAvailable || !verifiedProperty || ctx.property_id !== propertyId.trim() || gpsPropertyId !== ctx.property_id) {
       return Alert.alert('Verify property first', 'Load and confirm the displayed property before submitting a location.')
     }
     if (!gps) return Alert.alert('GPS required', 'Capture your GPS location first.')
@@ -195,10 +225,11 @@ export default function GpsCertifyScreen({ navigation }) {
   }
 
   const submitConfirmed = async (decision) => {
-    if (!ctx || !contextIsLive || !gps || !verifiedProperty) return
+    if (!ctx || !contextAvailable || !gps || gpsPropertyId !== ctx.property_id || !verifiedProperty) return
     setBusy(true)
     setMessage('Saving GPS certification locally and checking synchronization…')
     setMessageTone(theme.colors.primary)
+    const localTransactionId = submissionTransactionId || Crypto.randomUUID()
     const payload = {
       property_id: ctx.property_id,
       certification_decision: decision,
@@ -208,21 +239,52 @@ export default function GpsCertifyScreen({ navigation }) {
       source: attachVisit ? 'enforcement_visit' : 'other',
       remarks: remarks.trim() || undefined,
       captured_at: gps.at,
+      local_transaction_id: localTransactionId,
       ...(attachVisit ? { visit_id: attachVisit } : {}),
     }
+    if (!submissionTransactionId) setSubmissionTransactionId(localTransactionId)
     try {
+      if (decision === 'yes' && can(user, 'gps.update')) {
+        if (!contextIsLive) throw new Error('Direct official GPS updates require a live property check. The captured location remains in the encrypted draft.')
+        const network = await NetInfo.fetch()
+        if (network.isConnected !== true || network.isInternetReachable === false) {
+          throw new Error('Direct official GPS updates require an online server decision. The captured location remains in the encrypted draft.')
+        }
+        await saveOfflineDraft(user.id, 'gps-certify:capture', {
+          propertyId,
+          gps,
+          gpsPropertyId,
+          attachVisit,
+          remarks,
+          submissionTransactionId: localTransactionId,
+        })
+        const response = await api.post('/gps/certify', payload)
+        const serverData = response.data?.data
+        setSyncState({ status: 'synced', serverResponse: serverData })
+        setMessage(serverData?.message || 'The server accepted the GPS certification. Check the current certification status below.')
+        setMessageTone(theme.colors.success)
+        await loadSubmissions(ctx.property_id)
+        await clearDraft()
+        clearCaptureDraft()
+        return
+      }
+
       const result = await queueAndFlush('gps_certify', payload)
       setSyncState(result)
       if (result.status === 'synced') {
         setMessage('Submission synchronized with the server. This does not mean it is certified; check the certification status below.')
         setMessageTone(theme.colors.success)
         await loadSubmissions(ctx.property_id)
+        await clearDraft()
+        clearCaptureDraft()
       } else if (result.status === 'failed') {
         setMessage(result.lastError || result.syncResult?.message || 'Synchronization failed. Retry from here or the Sync queue.')
         setMessageTone(theme.colors.danger)
       } else {
         setMessage('Saved on this device and queued for synchronization. The certification is not yet confirmed by the server.')
         setMessageTone(theme.colors.warning)
+        await clearDraft()
+        clearCaptureDraft()
       }
     } catch (error) {
       setMessage(serverMessage(error, 'Could not save this GPS certification locally.'))
@@ -230,6 +292,15 @@ export default function GpsCertifyScreen({ navigation }) {
     } finally {
       setBusy(false)
     }
+  }
+
+  const clearCaptureDraft = () => {
+    setGps(null)
+    setGpsPropertyId(null)
+    setAttachVisit(null)
+    setRemarks('')
+    setSubmissionTransactionId(null)
+    setVerifiedProperty(false)
   }
 
   const retrySync = async () => {
@@ -258,7 +329,8 @@ export default function GpsCertifyScreen({ navigation }) {
   const official = ctx?.official
   const property = ctx?.property
   const contextIsLive = contextSource === 'live' || contextSource === 'live-cache-failed'
-  const activeProperty = !!ctx && contextIsLive && verifiedProperty && ctx.property_id === propertyId.trim()
+  const contextAvailable = contextIsLive || contextSource === 'cached'
+  const activeProperty = !!ctx && contextAvailable && verifiedProperty && ctx.property_id === propertyId.trim()
 
   return (
     <Screen>
@@ -280,6 +352,8 @@ export default function GpsCertifyScreen({ navigation }) {
         })}
       </View>
 
+      {draftError ? <Text style={[styles.dangerText, { marginHorizontal: 16 }]}>{draftError}</Text> : null}
+      {!draftReady ? <Text style={[styles.helper, { marginHorizontal: 16 }]}>Restoring encrypted GPS capture draft…</Text> : null}
       {!!message && <View style={[styles.notice, { borderColor: messageTone, backgroundColor: `${messageTone}14` }]}><Text style={[styles.noticeText, { color: messageTone }]}>{message}</Text></View>}
 
       {!canCertify && <Card style={styles.card}><Text style={styles.dangerText}>GPS certification is not enabled for this role. Required permissions: gps.capture and gps.certify.</Text></Card>}
@@ -300,6 +374,9 @@ export default function GpsCertifyScreen({ navigation }) {
                 setContextSource(null)
                 setVerifiedProperty(false)
                 setGps(null)
+                setGpsPropertyId(null)
+                setAttachVisit(null)
+                setSubmissionTransactionId(null)
                 setSubmissions([])
                 setSyncState(null)
               }
@@ -307,7 +384,7 @@ export default function GpsCertifyScreen({ navigation }) {
             placeholderTextColor={theme.colors.textLight}
             accessibilityLabel="Property ID"
           />
-          <TouchableOpacity onPress={loadContext} style={[styles.loadBtn, loading && styles.disabled]} disabled={loading}>
+          <TouchableOpacity onPress={loadContext} style={[styles.loadBtn, (loading || !draftReady) && styles.disabled]} disabled={loading || !draftReady}>
             {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.loadBtnText}>Load</Text>}
           </TouchableOpacity>
         </View>
@@ -331,12 +408,18 @@ export default function GpsCertifyScreen({ navigation }) {
             )}
             <TouchableOpacity
               onPress={() => setVerifiedProperty((current) => !current)}
-              disabled={!contextIsLive}
+              disabled={!contextAvailable}
               style={[styles.confirmProperty, verifiedProperty && styles.confirmPropertyOn]}
               accessibilityRole="checkbox"
-              accessibilityState={{ checked: verifiedProperty, disabled: !contextIsLive }}>
+              accessibilityState={{ checked: verifiedProperty, disabled: !contextAvailable }}>
               <Text style={styles.confirmCheck}>{verifiedProperty ? '✓' : '○'}</Text>
-              <Text style={styles.confirmText}>{contextIsLive ? 'I verified this is the property I am visiting.' : 'Connect and verify the live property before capturing GPS.'}</Text>
+              <Text style={styles.confirmText}>
+                {contextIsLive
+                  ? 'I verified this is the property I am visiting.'
+                  : contextSource === 'cached'
+                    ? 'I confirmed the property identity using its encrypted offline record. RETD will re-check before accepting this submission.'
+                    : 'Load a current or unexpired saved property record before capturing GPS.'}
+              </Text>
             </TouchableOpacity>
           </View>
         )}
@@ -354,7 +437,7 @@ export default function GpsCertifyScreen({ navigation }) {
             label={locating ? 'Acquiring GPS…' : gps ? 'Capture again' : '📡 Capture GPS location'}
             onPress={getGps}
             loading={locating}
-            disabled={!canCertify || locating}
+            disabled={!canCertify || locating || !draftReady}
           />
           {gps ? (
             <View style={styles.gpsPanel}>
@@ -410,8 +493,8 @@ export default function GpsCertifyScreen({ navigation }) {
             />
           </Field>
           <View style={styles.decisionButtons}>
-            <Btn tone="success" label="Confirm actual property" onPress={() => submit('yes')} loading={busy} disabled={busy || !canCertify} />
-            <Btn tone="danger" label="Not the actual property" onPress={() => submit('no')} loading={busy} disabled={busy || !canCertify} />
+            <Btn tone="success" label="Confirm actual property" onPress={() => submit('yes')} loading={busy} disabled={busy || !canCertify || !draftReady || !!syncState} />
+            <Btn tone="danger" label="Not the actual property" onPress={() => submit('no')} loading={busy} disabled={busy || !canCertify || !draftReady || !!syncState} />
           </View>
           <Text style={styles.helper}>A “yes” capture becomes official immediately only for users with update rights; otherwise it waits for authorized review.</Text>
         </Card>

@@ -96,12 +96,10 @@ export default function TasksScreen({ navigation }) {
 
   const canLogVisit = can(user, 'tasks.complete') || can(user, 'enforcement.record_visit')
   const canClaimPayment = can(user, 'payments.claim')
-  const cachedReadOnly = readStatus === 'cached' || readStatus === 'expired'
-
   const row = ({ item }) => {
     const bill = item.property_bill
     return (
-      <Card onPress={cachedReadOnly ? undefined : () => navigate(item)}>
+      <Card onPress={() => navigate(item)}>
         <View style={s.cardTop}>
           <View style={{ flex: 1 }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
@@ -145,7 +143,7 @@ export default function TasksScreen({ navigation }) {
           </View>
         )}
 
-        {!cachedReadOnly && <View style={s.actions}>
+        <View style={s.actions}>
           {canLogVisit && (
             <TouchableOpacity style={s.visitBtn} onPress={() => openVisit(item)}>
               <Text style={s.visitBtnText}>Log Visit</Text>
@@ -156,7 +154,7 @@ export default function TasksScreen({ navigation }) {
               <Text style={s.receiptBtnText}>Receipt</Text>
             </TouchableOpacity>
           )}
-        </View>}
+        </View>
       </Card>
     )
   }

@@ -4,35 +4,58 @@ import { useFocusEffect } from '@react-navigation/native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import api from '../api'
 import { useAuth } from '../auth'
+import { fetchOfflineRead } from '../offline'
 import { serverMessage } from '../rbac'
 import { theme } from '../theme'
-import { BrandHeader, Badge, Empty, Card } from '../components'
+import { BrandHeader, Badge, Empty, Card, OfflineReadStatus } from '../components'
 
 export default function AccountTasksScreen({ navigation }) {
-  const { user } = useAuth()
+  const { user, canUseOfflineCache } = useAuth()
   const insets = useSafeAreaInsets()
   const [tab, setTab] = useState('assigned')
   const [tasks, setTasks] = useState(null)
   const [discoveries, setDiscoveries] = useState(null)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
+  const [readStatus, setReadStatus] = useState({ tasks: null, discoveries: null })
+  const [syncedAt, setSyncedAt] = useState({ tasks: null, discoveries: null })
 
-  const load = async (showSpinner = true) => {
+  const load = useCallback(async (showSpinner = true) => {
     if (showSpinner) setRefreshing(true)
     setError('')
     try {
       const [t, d] = await Promise.all([
-        api.get('/account/my-tasks', { params: { per_page: 50 } }),
-        api.get('/discoveries', { params: { officer_id: user.id, per_page: 50 } }),
+        fetchOfflineRead({
+          module: 'tasks',
+          cacheKey: `${user?.role}:account-tasks:50`,
+          user,
+          allowCache: canUseOfflineCache,
+          request: () => api.get('/account/my-tasks', { params: { per_page: 50 } }),
+          select: (response) => response.data?.data?.data || response.data?.data || [],
+        }),
+        fetchOfflineRead({
+          module: 'discoveries',
+          cacheKey: `${user?.role}:account-discoveries:50`,
+          user,
+          allowCache: canUseOfflineCache,
+          request: () => api.get('/discoveries', { params: { officer_id: user?.id, per_page: 50 } }),
+          select: (response) => response.data?.data?.data || response.data?.data || [],
+          cacheSelect: (records) => Array.isArray(records)
+            ? records.filter((record) => String(record?.discovered_by) === String(user?.id))
+            : [],
+        }),
       ])
-      setTasks(t.data.data?.data || t.data.data || [])
-      setDiscoveries(d.data.data?.data || d.data.data || [])
+      setTasks(t.status === 'expired' ? [] : t.data)
+      setDiscoveries(d.status === 'expired' ? [] : d.data)
+      setReadStatus({ tasks: t.status, discoveries: d.status })
+      setSyncedAt({ tasks: t.syncedAt, discoveries: d.syncedAt })
+      if (t.status === 'expired' || d.status === 'expired') setError('Some offline work data has expired. Connect to refresh it.')
     } catch (e) {
       setError(serverMessage(e, 'Could not load your account queue.'))
     } finally { setRefreshing(false) }
-  }
+  }, [user, canUseOfflineCache])
 
-  useFocusEffect(useCallback(() => { load(false) }, []));
+  useFocusEffect(useCallback(() => { load(false) }, [load]))
 
   const taskRow = ({ item }) => (
     <Card onPress={() => navigation.navigate('TaskDetail', { taskId: item.id, assignment: item })}>
@@ -96,6 +119,7 @@ export default function AccountTasksScreen({ navigation }) {
   return (
     <View style={s.container}>
       <BrandHeader title="My Tasks" subtitle="Account & Records queue" />
+      <OfflineReadStatus status={tab === 'assigned' ? readStatus.tasks : readStatus.discoveries} syncedAt={tab === 'assigned' ? syncedAt.tasks : syncedAt.discoveries} />
 
       <View style={s.seg}>
         {[

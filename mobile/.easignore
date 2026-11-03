@@ -1,0 +1,12 @@
+node_modules/
+.expo/
+dist/
+*.log
+.env
+.env.*
+android/app/debug.keystore
+*.jks
+*.keystore
+*.p12
+*.pem
+*.mobileprovision

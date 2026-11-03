@@ -8,16 +8,18 @@ import { useSync } from '../sync'
 import { useAuth } from '../auth'
 import { can, serverMessage, isOnlineRejection } from '../rbac'
 import { theme } from '../theme'
-import { Screen, Field, Btn, ChipRow, Card, InfoRow } from '../components'
-import { photoToUpload } from '../image'
+import { Screen, Field, Btn, ChipRow, Card, InfoRow, OfflineReadStatus } from '../components'
+import { FIELD_EVIDENCE_LIMITS, photoToSubmission } from '../image'
+import { fetchOfflineRead } from '../offline'
+import { useOfflineDraft } from '../useOfflineDraft'
 
 const VISIT_STATUSES = ['Visited - Delivered', 'Visited - Payment Follow-up', 'Premises Locked', 'Business Closed', 'Subject Not Found', 'Refused Service', 'Follow-up Scheduled']
 const DELIVERY_STATUSES = ['Out for Delivery', 'Delivered', 'Returned', 'Undelivered', 'Not Mailable']
 
 export default function VisitFormScreen({ route, navigation }) {
   const { assignment, bill } = route.params || {}
-  const { user } = useAuth()
-  const { queueAndFlush } = useSync()
+  const { user, canUseOfflineCache } = useAuth()
+  const { queueBundleAndFlush } = useSync()
   const [status, setStatus] = useState('Visited - Delivered')
   const [delivery, setDelivery] = useState('Delivered')
   const [recipientName, setRecipientName] = useState('')
@@ -26,6 +28,7 @@ export default function VisitFormScreen({ route, navigation }) {
   const [gps, setGps] = useState(null)
   const [locating, setLocating] = useState(false)
   const [photos, setPhotos] = useState([])
+  const [claimPhoto, setClaimPhoto] = useState(null)
   const [busy, setBusy] = useState(false)
   const [claim, setClaim] = useState(false)
   const [claimReceipt, setClaimReceipt] = useState('')
@@ -33,13 +36,67 @@ export default function VisitFormScreen({ route, navigation }) {
   const [claimDate, setClaimDate] = useState('')
   const [claimNotes, setClaimNotes] = useState('')
   const [history, setHistory] = useState(null)
+  const [historyError, setHistoryError] = useState('')
+  const [historyStatus, setHistoryStatus] = useState(null)
+  const [historySyncedAt, setHistorySyncedAt] = useState(null)
+  const [historyCacheError, setHistoryCacheError] = useState(null)
+  const draftValue = {
+    status, delivery, recipientName, recipientContact, notes, gps, photos, claim,
+    claimReceipt, claimAmount, claimDate, claimNotes, claimPhoto,
+  }
+  const { ready: draftReady, error: draftError, clear: clearDraft } = useOfflineDraft(
+    `visit:${assignment?.id}:${bill?.id}`,
+    user?.id,
+    draftValue,
+    (draft) => {
+      for (const [key, setter] of Object.entries({
+        status: setStatus, delivery: setDelivery, recipientName: setRecipientName,
+        recipientContact: setRecipientContact, notes: setNotes, gps: setGps, photos: setPhotos,
+        claim: setClaim, claimReceipt: setClaimReceipt, claimAmount: setClaimAmount,
+        claimDate: setClaimDate, claimNotes: setClaimNotes, claimPhoto: setClaimPhoto,
+      })) {
+        if (draft[key] !== undefined) setter(draft[key])
+      }
+    },
+    Boolean(recipientName || recipientContact || notes || gps || photos.length || claim
+      || claimReceipt || claimAmount || claimDate || claimNotes || claimPhoto
+      || status !== 'Visited - Delivered' || delivery !== 'Delivered'),
+  )
 
   const loadHistory = useCallback(async () => {
     try {
-      const r = await api.get('/enforcement-visits', { params: { bill_id: bill?.id, per_page: 50 } })
-      setHistory(r.data?.data || [])
-    } catch { setHistory([]) }
-  }, [bill?.id])
+      const result = await fetchOfflineRead({
+        module: 'visits',
+        cacheKey: `${user?.role}:bill:${bill?.id}:50`,
+        user,
+        allowCache: canUseOfflineCache,
+        request: () => api.get('/enforcement-visits', { params: { bill_id: bill?.id, per_page: 50 } }),
+        select: (response) => response.data?.data?.data || response.data?.data || [],
+        cacheSelect: (visits) => Array.isArray(visits) ? visits.map((visit) => ({
+          id: visit.id,
+          visit_reference: visit.visit_reference,
+          visit_date: visit.visit_date,
+          gps_coordinate: visit.gps_coordinate,
+          gps_accuracy: visit.gps_accuracy,
+          visit_status: visit.visit_status,
+          delivery_status: visit.delivery_status,
+          remarks: visit.remarks,
+          recipient_name: visit.recipient_name,
+          snapshot_case_status: visit.snapshot_case_status,
+          next_action: visit.next_action,
+          next_followup_date: visit.next_followup_date,
+        })) : [],
+      })
+      setHistory(result.status === 'expired' ? [] : result.data)
+      setHistoryStatus(result.status)
+      setHistorySyncedAt(result.syncedAt)
+      setHistoryCacheError(result.cacheError || null)
+      setHistoryError(result.status === 'expired' ? 'Offline visit history has expired. Connect to refresh it.' : '')
+    } catch (error) {
+      setHistory([])
+      setHistoryError(serverMessage(error, 'Unable to load visit history.'))
+    }
+  }, [bill?.id, canUseOfflineCache, user])
 
   useFocusEffect(useCallback(() => { loadHistory() }, [loadHistory]))
 
@@ -47,6 +104,8 @@ export default function VisitFormScreen({ route, navigation }) {
   if (!bill || !assignment) {
     return (
       <Screen>
+        {draftError ? <Text style={{ color: theme.colors.danger, paddingHorizontal: 16 }}>{draftError}</Text> : null}
+        {!draftReady ? <Text style={{ color: theme.colors.textMuted, paddingHorizontal: 16 }}>Restoring encrypted visit draft…</Text> : null}
         <Card style={{ marginTop: 14 }}>
           <Text style={s.billNo}>Field visits</Text>
           <Text style={{ color: theme.colors.textMuted, fontSize: 13, marginTop: 6 }}>
@@ -89,13 +148,27 @@ export default function VisitFormScreen({ route, navigation }) {
   }
 
   const pickPhotos = async () => {
+    const remaining = FIELD_EVIDENCE_LIMITS.visitPhotos - photos.length
+    if (remaining <= 0) return Alert.alert('Photo limit', `A visit can include at most ${FIELD_EVIDENCE_LIMITS.visitPhotos} photographs.`)
     const { status: perm } = await ImagePicker.requestMediaLibraryPermissionsAsync()
     if (perm !== 'granted') return Alert.alert('Permission', 'Gallery access required to attach proof documents.')
-    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: 'images', allowsMultipleSelection: true, quality: 0.6 })
-    if (!result.canceled) setPhotos([...photos, ...result.assets.map((a) => ({ uri: a.uri, fromCamera: false }))])
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: 'images', allowsMultipleSelection: true, selectionLimit: remaining, quality: 0.6 })
+    if (!result.canceled) {
+      try {
+        const selected = await Promise.all(result.assets.slice(0, remaining).map(async (asset) => {
+          const capturedAt = asset.exif?.DateTimeOriginal || new Date().toISOString()
+          const dataUri = await photoToSubmission({ uri: asset.uri, fromCamera: false })
+          return { uri: dataUri, dataUri, fromCamera: false, capturedAt }
+        }))
+        setPhotos((current) => [...current, ...selected].slice(0, FIELD_EVIDENCE_LIMITS.visitPhotos))
+      } catch (error) {
+        Alert.alert('Photo not added', error.message)
+      }
+    }
   }
 
   const takePhoto = async () => {
+    if (photos.length >= FIELD_EVIDENCE_LIMITS.visitPhotos) return Alert.alert('Photo limit', `A visit can include at most ${FIELD_EVIDENCE_LIMITS.visitPhotos} photographs.`)
     const { status: perm, canAskAgain } = await ImagePicker.requestCameraPermissionsAsync()
     if (perm !== 'granted') {
       return Alert.alert(
@@ -108,82 +181,122 @@ export default function VisitFormScreen({ route, navigation }) {
     const result = await ImagePicker.launchCameraAsync({ quality: 0.6 })
     if (!result.canceled) {
       const a = result.assets[0]
-      setPhotos([...photos, { uri: a.uri, fromCamera: true }])
+      try {
+        const capturedAt = new Date().toISOString()
+        const dataUri = await photoToSubmission({ uri: a.uri, fromCamera: true })
+        setPhotos((current) => [...current, { uri: dataUri, dataUri, fromCamera: true, capturedAt }])
+      } catch (error) {
+        Alert.alert('Photo not added', error.message)
+      }
+    }
+  }
+
+  const takeClaimPhoto = async () => {
+    const { status: perm, canAskAgain } = await ImagePicker.requestCameraPermissionsAsync()
+    if (perm !== 'granted') {
+      return Alert.alert(
+        'Camera access needed',
+        canAskAgain
+          ? 'Grant camera permission to capture receipt evidence.'
+          : 'Camera permission was denied. Enable it in your device settings, then try again.'
+      )
+    }
+    const result = await ImagePicker.launchCameraAsync({ quality: 0.6 })
+    if (!result.canceled) {
+      try {
+        const dataUri = await photoToSubmission({ uri: result.assets[0].uri, fromCamera: true })
+        setClaimPhoto({ uri: dataUri, dataUri, fromCamera: true, capturedAt: new Date().toISOString() })
+      } catch (error) {
+        Alert.alert('Receipt photo not added', error.message)
+      }
     }
   }
 
   const submit = async () => {
+    if (!draftReady) return Alert.alert('Please wait', 'The encrypted offline draft is still loading.')
     if (!gps) return Alert.alert('GPS required', 'Capture your GPS location before saving.')
-    if (claim && (!claimReceipt.trim() || !(Number(claimAmount) > 0))) return Alert.alert('Claim incomplete', 'Provide a receipt number and amount for the on-the-spot payment claim.')
+    if (claim && (!claimReceipt.trim() || !(Number(claimAmount) > 0) || !claimPhoto)) return Alert.alert('Claim incomplete', 'Provide a receipt number, positive amount and receipt photo for the on-the-spot payment claim.')
     setBusy(true)
-    const payload = {
-      assignment_id: assignment.id,
-      property_bill_id: bill.id,
-      status,
-      delivery_status: delivery,
-      recipient_name: recipientName.trim() || undefined,
-      recipient_contact: recipientContact.trim() || undefined,
-      notes: notes || undefined,
-      gps_lat: gps.latitude,
-      gps_lng: gps.longitude,
-      gps_accuracy: gps.accuracy,
-      gps_captured_at: gps.at,
-      photo_type: delivery === 'Delivered' ? 'BILL_DELIVERY' : 'PROPERTY_FULL_VIEW',
-      proof_photo: photos[0]
-        ? await photoToUpload(photos[0])
-        : undefined,
-      claim_receipt_number: claim ? claimReceipt.trim() : undefined,
-      claim_amount: claim ? Number(claimAmount) : undefined,
-      claim_payment_date: claim && claimDate ? claimDate : undefined,
-      claim_remarks: claim && claimNotes.trim() ? claimNotes.trim() : undefined,
-    }
-    const queued = []
-    const fail = (e, what) => {
-      setBusy(false)
-      if (isOnlineRejection(e)) {
-        Alert.alert(`${what} not saved`, serverMessage(e, 'The server rejected the record.'))
-        return true
-      }
-      return false
-    }
     try {
-      await api.post('/enforcement-visits', payload)
-    } catch (e) {
-      if (fail(e, 'Visit')) return
-      await queueAndFlush('visit', payload)
-      queued.push('visit')
-    }
-    Alert.alert(
-      queued.length ? 'Saved offline' : 'Visit saved',
-      queued.length
-        ? 'Visit queued locally — it will sync automatically when you are back online.'
-        : 'The visit has been recorded against the task. Previous visits stay on the record.',
-      [
-        { text: 'Done', onPress: () => navigation.goBack() },
-        { text: 'Record another visit', onPress: () => { setStatus('Visited - Delivered'); setDelivery('Delivered'); setRecipientName(''); setRecipientContact(''); setNotes(''); setGps(null); setPhotos([]); setClaim(false); setClaimReceipt(''); setClaimAmount(''); setClaimDate(''); setClaimNotes('') } },
-      ]
-    )
-    setBusy(false)
+      const preparedPhotos = await Promise.all(photos.map((photo) => photoToSubmission(photo)))
+      const receiptPhoto = claim ? await photoToSubmission(claimPhoto) : undefined
+      const payload = {
+        assignment_id: assignment.id,
+        property_bill_id: bill.id,
+        status,
+        delivery_status: delivery,
+        recipient_name: recipientName.trim() || undefined,
+        recipient_contact: recipientContact.trim() || undefined,
+        notes: notes || undefined,
+        gps_lat: gps.latitude,
+        gps_lng: gps.longitude,
+        gps_accuracy: gps.accuracy,
+        gps_captured_at: gps.at,
+        photo_type: delivery === 'Delivered' ? 'BILL_DELIVERY' : 'PROPERTY_FULL_VIEW',
+        proof_photo: preparedPhotos[0],
+        claim_receipt_number: claim ? claimReceipt.trim() : undefined,
+        claim_amount: claim ? Number(claimAmount) : undefined,
+        claim_payment_date: claim && claimDate ? claimDate : undefined,
+        claim_receipt_photo: receiptPhoto,
+        claim_remarks: claim && claimNotes.trim() ? claimNotes.trim() : undefined,
+      }
+      const children = preparedPhotos.slice(1).map((dataUri, index) => ({
+        kind: 'evidence',
+        parentField: 'visit_id',
+        payload: {
+          photo_type: delivery === 'Delivered' ? 'BILL_DELIVERY' : 'PROPERTY_FULL_VIEW',
+          data_uri: dataUri,
+          bill_id: bill.id,
+          task_id: assignment.id,
+          property_id: bill.property_id || undefined,
+          gps_coordinate: `${gps.latitude.toFixed(6)},${gps.longitude.toFixed(6)}`,
+          captured_at: photos[index + 1]?.capturedAt,
+        },
+      }))
+      const result = await queueBundleAndFlush('visit', payload, children)
+      if (result.status !== 'failed') await clearDraft()
+      const synced = result.allSynced
+      Alert.alert(
+        result.status === 'failed' ? 'Visit needs correction' : synced ? 'Visit submitted' : 'Visit saved for synchronization',
+        result.status === 'failed'
+          ? `${result.lastError || 'The server rejected this submission.'} The encrypted form draft remains available for correction.`
+          : synced
+          ? 'The visit and evidence were confirmed by RETD. Any payment claim remains pending server verification.'
+          : 'The visit and evidence are retained in encrypted offline storage and will retry when connected. A payment claim is not verified or paid.',
+        [
+          { text: 'Done', onPress: () => navigation.goBack() },
+          { text: 'Record another visit', onPress: () => {
+            setStatus('Visited - Delivered'); setDelivery('Delivered'); setRecipientName(''); setRecipientContact('')
+            setNotes(''); setGps(null); setPhotos([]); setClaim(false); setClaimReceipt(''); setClaimAmount('')
+            setClaimDate(''); setClaimNotes(''); setClaimPhoto(null)
+          } },
+        ],
+      )
+    } catch (error) {
+      Alert.alert('Visit not saved', isOnlineRejection(error)
+        ? serverMessage(error, 'The server rejected the visit. The encrypted draft remains available.')
+        : error?.message || 'The visit remains in the encrypted draft and was not discarded.')
+    } finally { setBusy(false) }
   }
 
   const escalate = async () => {
     setBusy(true)
-    const payload = { assignment_id: assignment.id, action: 'escalate', visit_date: new Date().toISOString().slice(0, 10), notes: notes || undefined }
     try {
-      await api.post(`/enforcement-assignments/${assignment.id}/action`, { action: 'escalate', visit_date: payload.visit_date, notes: payload.notes })
+      await api.post(`/enforcement-assignments/${assignment.id}/action`, { action: 'escalate', visit_date: new Date().toISOString().slice(0, 10), notes: notes || undefined })
       Alert.alert('Escalated', 'Case escalated for manager review.', [{ text: 'OK', onPress: () => navigation.goBack() }])
     } catch (e) {
       if (isOnlineRejection(e)) {
         Alert.alert('Not escalated', serverMessage(e, 'The server rejected the escalation.'))
       } else {
-        await queueAndFlush('action', payload)
-        Alert.alert('Queued offline', 'Escalation will sync when online.', [{ text: 'OK', onPress: () => navigation.goBack() }])
+        Alert.alert('Escalation not confirmed', 'Escalations require an online server decision. No offline escalation was queued; reconnect and check the task status before retrying.')
       }
     } finally { setBusy(false) }
   }
 
   return (
     <Screen>
+      {draftError ? <Text style={{ color: theme.colors.danger, paddingHorizontal: 16 }}>{draftError}</Text> : null}
+      {!draftReady ? <Text style={{ color: theme.colors.textMuted, paddingHorizontal: 16 }}>Restoring encrypted visit draft…</Text> : null}
       <Card style={{ marginTop: 14 }}>
         <View style={s.billHeader}>
           <View style={{ flex: 1 }}>
@@ -256,6 +369,17 @@ export default function VisitFormScreen({ route, navigation }) {
           </TouchableOpacity>
           {claim && (
             <>
+              <View style={{ paddingHorizontal: 16, marginBottom: 10 }}>
+                <Btn
+                  tone={claimPhoto ? 'success' : 'outline'}
+                  label={claimPhoto ? '✓ Receipt evidence captured' : '📷 Capture required receipt evidence'}
+                  onPress={takeClaimPhoto}
+                  disabled={busy}
+                />
+                {claimPhoto ? (
+                  <Image source={{ uri: claimPhoto.uri }} style={{ width: 96, height: 96, borderRadius: 10, marginTop: 8 }} />
+                ) : null}
+              </View>
               <Field label="Receipt number">
                 <TextInput style={[s.input, { marginHorizontal: 0 }]} placeholder="Receipt / voucher #…" value={claimReceipt} onChangeText={setClaimReceipt} placeholderTextColor={theme.colors.textLight} />
               </Field>
@@ -284,7 +408,7 @@ export default function VisitFormScreen({ route, navigation }) {
       </Field>
 
       <View style={{ paddingHorizontal: 16, gap: 10, marginTop: 8 }}>
-        {canComplete && <Btn label="✓ Save Visit" onPress={submit} loading={busy} />}
+        {canComplete && <Btn label="✓ Save Visit" onPress={submit} loading={busy} disabled={!draftReady} />}
         {canEscalate && <Btn tone="danger" label="⚠ Escalate to Manager" onPress={escalate} disabled={busy} />}
         {canClaim && (
           <TouchableOpacity style={{ marginTop: 4, minHeight: 44, justifyContent: 'center' }} onPress={() => navigation.navigate('SubmitReceipt', { bill })}>
@@ -293,6 +417,8 @@ export default function VisitFormScreen({ route, navigation }) {
         )}
       </View>
 
+      <OfflineReadStatus status={historyStatus} syncedAt={historySyncedAt} cacheError={historyCacheError} />
+      {historyError ? <Text style={{ color: theme.colors.danger, marginHorizontal: 16 }}>{historyError}</Text> : null}
       {history === null ? (
         <ActivityIndicator color={theme.colors.primary} style={{ marginTop: 24 }} />
       ) : history.length > 0 ? (

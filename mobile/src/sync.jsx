@@ -13,6 +13,7 @@ import {
   outboxMarkFailed,
   outboxPruneSynced,
   enqueue,
+  enqueueBundle,
   enqueueDependent,
   kvGet,
   kvSet,
@@ -31,10 +32,15 @@ let flushing = false
 const KIND_URL = {
   visit: () => '/enforcement-visits',
   discovery: () => '/discoveries',
+  valuation: () => '/valuations',
   receipt: () => '/enforcement/submit-receipt',
   action: (payload) => `/enforcement-assignments/${payload.assignment_id}/action`,
   evidence: () => '/evidence/photos',
   gps_certify: () => '/gps/certify',
+  engagement: (payload) => `/tasks/${payload.task_id}/engagements`,
+  notification_read: (payload) => `/notifications/${payload.notification_id}/read`,
+  notification_read_all: () => '/notifications/read-all',
+  bill_amendment: (payload) => `/property-bills/${payload.bill_id}/amend`,
 }
 
 // Rows stuck mid-flush for longer than this (a crash right after a row was
@@ -90,6 +96,11 @@ async function attemptRow(row, ownerUserId, authToken, isCurrentSession) {
   }
 
   const url = KIND_URL[row.kind] ? KIND_URL[row.kind](payload) : null
+  if (row.kind === 'action') {
+    const message = 'Workflow and assignment decisions require live server authorization and were not replayed offline.'
+    await outboxMarkFailed(row.id, message, ownerUserId)
+    return { ok: false, offline: false, message }
+  }
   if (!url) {
     await outboxMarkFailed(row.id, `Unknown sync kind: ${row.kind}`, ownerUserId)
     // Terminal for this row, but NOT a transport failure — the queue must keep
@@ -103,10 +114,10 @@ async function attemptRow(row, ownerUserId, authToken, isCurrentSession) {
       authUserId: ownerUserId,
     })
     const serverId = res?.data?.data?.id
-    if (row.kind === 'discovery' && serverId) {
+    if (['discovery', 'valuation', 'visit'].includes(row.kind) && serverId) {
       await kvSet(`svc:${ownerUserId}:${row.local_transaction_id}`, String(serverId))
     }
-    await outboxMarkSynced(row.id, ownerUserId)
+    await outboxMarkSynced(row.id, ownerUserId, serverId, res?.data?.data || null)
     return { ok: true }
   } catch (err) {
     const message = err?.response?.data?.message || err?.message || 'Sync failed'
@@ -138,7 +149,7 @@ export function SyncProvider({ children }) {
 
   useEffect(() => {
     refreshCounts()
-    if (userId != null) outboxPruneSynced(userId, 7)
+    if (userId != null) outboxPruneSynced(userId, 30)
   }, [refreshCounts, userId])
 
   const processOutbox = useCallback(async ({ quiet } = {}) => {
@@ -252,11 +263,43 @@ export function SyncProvider({ children }) {
       : { ok: false, offline: true }
     const rows = await outboxAll(userId)
     const row = rows.find((item) => item.local_transaction_id === localTransactionId)
+    let serverResponse = null
+    try { serverResponse = row?.server_response_json ? JSON.parse(row.server_response_json) : null } catch {}
     return {
       localTransactionId,
       outboxId: row?.id ?? null,
       status: row?.status ?? 'pending',
+      serverEntityId: row?.server_entity_id ?? null,
+      serverResponse,
       lastError: row?.last_error ?? null,
+      syncResult,
+    }
+  }
+
+  const queueBundleAndFlush = async (kind, payload, children = []) => {
+    if (userId == null) throw new Error('Sign in before saving an offline submission.')
+    await getDb()
+    const localTransactionId = await enqueueBundle(userId, kind, payload, children)
+    await refreshCounts()
+    const net = await NetInfo.fetch()
+    const syncResult = net.isConnected
+      ? await processOutbox({ quiet: true })
+      : { ok: false, offline: true }
+    const rows = await outboxAll(userId)
+    const relatedRows = rows.filter((item) =>
+      item.local_transaction_id === localTransactionId || item.parent_transaction_id === localTransactionId,
+    )
+    const row = relatedRows.find((item) => item.local_transaction_id === localTransactionId)
+    let serverResponse = null
+    try { serverResponse = row?.server_response_json ? JSON.parse(row.server_response_json) : null } catch {}
+    return {
+      localTransactionId,
+      outboxId: row?.id ?? null,
+      status: row?.status ?? 'pending',
+      serverEntityId: row?.server_entity_id ?? null,
+      serverResponse,
+      allSynced: relatedRows.length === children.length + 1 && relatedRows.every((item) => item.status === 'synced'),
+      lastError: relatedRows.find((item) => item.last_error)?.last_error ?? null,
       syncResult,
     }
   }
@@ -274,7 +317,7 @@ export function SyncProvider({ children }) {
     : { pending: 0, syncing: 0, synced: 0, failed: 0, total: 0 }
 
   return (
-    <SyncCtx.Provider value={{ counts, pending: counts.pending + counts.syncing + counts.failed, syncing, processOutbox, retryRow, queueAndFlush, enqueue: enqueueForUser, enqueueDependent: enqueueDependentForUser }}>
+    <SyncCtx.Provider value={{ counts, pending: counts.pending + counts.syncing + counts.failed, syncing, processOutbox, retryRow, queueAndFlush, queueBundleAndFlush, enqueue: enqueueForUser, enqueueDependent: enqueueDependentForUser }}>
       {children}
     </SyncCtx.Provider>
   )

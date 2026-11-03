@@ -3,9 +3,11 @@ import { View, Text, FlatList, TouchableOpacity, StyleSheet, RefreshControl, Act
 import { useFocusEffect } from '@react-navigation/native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import api from '../api'
+import { useAuth } from '../auth'
+import { fetchOfflineRead } from '../offline'
 import { serverMessage } from '../rbac'
 import { theme } from '../theme'
-import { BrandHeader, Badge, Empty, Card } from '../components'
+import { BrandHeader, Badge, Empty, Card, OfflineReadStatus } from '../components'
 
 /**
  * Generic section workspace task screen (Assistant Commissioner / Valuation).
@@ -15,29 +17,49 @@ import { BrandHeader, Badge, Empty, Card } from '../components'
  */
 export default function WorkspaceTasksScreen({ navigation, route }) {
   const { workspace, subtitle } = route?.params || {}
+  const { user, canUseOfflineCache } = useAuth()
   const insets = useSafeAreaInsets()
   const [tab, setTab] = useState('assigned')
   const [tasks, setTasks] = useState(null)
   const [queue, setQueue] = useState(null)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
+  const [readStatus, setReadStatus] = useState({ assigned: null, queue: null })
+  const [syncedAt, setSyncedAt] = useState({ assigned: null, queue: null })
 
-  const load = async (showSpinner = true) => {
+  const load = useCallback(async (showSpinner = true) => {
     if (showSpinner) setRefreshing(true)
     setError('')
     try {
       const [t, q] = await Promise.all([
-        api.get(`/${workspace}/tasks`, { params: { per_page: 50 } }),
-        api.get(`/${workspace}/tasks/queue`, { params: { per_page: 50 } }),
+        fetchOfflineRead({
+          module: 'tasks',
+          cacheKey: `${user?.role}:${workspace}:assigned:50`,
+          user,
+          allowCache: canUseOfflineCache,
+          request: () => api.get(`/${workspace}/tasks`, { params: { per_page: 50 } }),
+          select: (response) => response.data?.data?.data || response.data?.data || [],
+        }),
+        fetchOfflineRead({
+          module: 'tasks',
+          cacheKey: `${user?.role}:${workspace}:queue:50`,
+          user,
+          allowCache: canUseOfflineCache,
+          request: () => api.get(`/${workspace}/tasks/queue`, { params: { per_page: 50 } }),
+          select: (response) => response.data?.data?.data || response.data?.data || [],
+        }),
       ])
-      setTasks(t.data.data?.data || t.data.data || [])
-      setQueue(q.data.data?.data || q.data.data || [])
+      setTasks(t.status === 'expired' ? [] : t.data)
+      setQueue(q.status === 'expired' ? [] : q.data)
+      setReadStatus({ assigned: t.status, queue: q.status })
+      setSyncedAt({ assigned: t.syncedAt, queue: q.syncedAt })
+      if (t.status === 'expired' || q.status === 'expired') setError('Some offline work data has expired. Connect to refresh it.')
     } catch (e) {
       setError(serverMessage(e, 'Could not load your workspace queue.'))
     } finally { setRefreshing(false) }
-  }
+  }, [workspace, user, canUseOfflineCache])
 
-  useFocusEffect(useCallback(() => { load(false) }, [workspace]))
+  useFocusEffect(useCallback(() => { load(false) }, [load]))
 
   const taskRow = ({ item }) => (
     <Card onPress={() => navigation.navigate('TaskDetail', { taskId: item.id, assignment: item })}>
@@ -74,6 +96,7 @@ export default function WorkspaceTasksScreen({ navigation, route }) {
   return (
     <View style={s.container}>
       <BrandHeader title="My Tasks" subtitle={subtitle || 'Section workspace'} />
+      <OfflineReadStatus status={tab === 'assigned' ? readStatus.assigned : readStatus.queue} syncedAt={tab === 'assigned' ? syncedAt.assigned : syncedAt.queue} />
 
       <View style={s.seg}>
         {[

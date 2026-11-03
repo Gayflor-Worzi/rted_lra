@@ -308,6 +308,17 @@ class EnforcementController extends Controller
             'local_transaction_id' => 'nullable|string|max:80',
         ]);
 
+        $hasPaymentClaim = ! empty($data['claim_receipt_number']) || array_key_exists('claim_amount', $data);
+        if ($hasPaymentClaim) {
+            abort_unless($user->canPermission('payments.claim'), 403, 'Missing permission: payments.claim');
+            abort_if(
+                empty($data['claim_receipt_number']) || ! isset($data['claim_amount']) || (float) $data['claim_amount'] <= 0,
+                422,
+                'A receipt number and positive claimed amount are required.'
+            );
+            abort_if(empty($data['claim_receipt_photo']), 422, 'Receipt evidence is required for an on-the-spot payment claim.');
+        }
+
         abort_if(
             ! empty($data['delivery_status'])
                 && ! empty($data['bill_delivery_status'])
@@ -402,7 +413,8 @@ class EnforcementController extends Controller
             }
         }
 
-        $visitPayload = DB::transaction(function () use ($data, $user, $syncId, $task, $bill, $billId, $taskId, $storedPhoto, $photoMime, $photoSize, $gps, $deliveryStatus) {
+        try {
+            $visitPayload = DB::transaction(function () use ($data, $user, $syncId, $task, $bill, $billId, $taskId, $storedPhoto, $photoMime, $photoSize, $gps, $deliveryStatus) {
             $visit = EnforcementVisit::create([
                 'task_id' => $task?->id ?? $taskId,
                 'bill_id' => $bill?->id ?? $billId,
@@ -505,29 +517,53 @@ class EnforcementController extends Controller
 
             // Optional on-the-spot payment claim (receipt from the field).
             if ($bill && ! empty($data['claim_receipt_number']) && $data['claim_amount'] !== null) {
-                // Receipt photo goes through the same decode-to-file path so the
-                // base64 string is never written into the VARCHAR attachment column.
-                $claimReceiptPath = null;
-                if (! empty($data['claim_receipt_photo'])) {
-                    $maybePath = $this->storePhotoBytes($data['claim_receipt_photo'])[0];
-                    if ($maybePath && ! str_contains($maybePath, 'base64,')) {
-                        $claimReceiptPath = $maybePath;
-                    }
+                $assess = $this->duplicates->assess([
+                    'receipt_number' => $data['claim_receipt_number'],
+                    'amount' => $data['claim_amount'],
+                    'period' => $bill->tax_period,
+                    'bill_id' => $bill->id,
+                    'property_id' => $data['claim_property_id'] ?? $bill->property_id,
+                ]);
+                if ($assess['hard_block']) {
+                    throw ReceiptConflictException::make((string) $assess['block_reason'], [
+                        'bill_id' => $bill->id,
+                        'receipt_number' => $assess['normalized_receipt_number'],
+                        'fingerprint' => $assess['fingerprint'],
+                    ]);
                 }
 
+                [$claimReceiptPath, $claimMime, $claimSize] = $this->storePhotoBytes($data['claim_receipt_photo']);
+                abort_if(! $claimReceiptPath || str_contains($claimReceiptPath, 'base64,'), 422, 'Receipt evidence could not be stored.');
                 $verification = PaymentVerification::create([
+                    'task_id' => $task?->id,
                     'bill_id' => $bill->id,
+                    'claimed_by' => $user->id,
                     'property_id' => $data['claim_property_id'] ?? $bill->property_id,
                     'tin' => $data['claim_tin'] ?? $bill->tin,
                     'tax_due_date' => $data['claim_tax_due_date'] ?? null,
+                    'receipt_date' => $data['claim_payment_date'] ?? null,
                     'document_number' => $bill->document_number,
-                    'receipt_number' => $data['claim_receipt_number'],
+                    'receipt_number' => $assess['normalized_receipt_number'],
                     'receipt_bill_number' => $bill->document_number,
                     'amount_claimed' => $data['claim_amount'],
-                    'payment_period' => null,
-                    'receipt_attachment' => $claimReceiptPath ?? $storedPhoto,
+                    'payment_period' => $bill->tax_period,
+                    'receipt_attachment' => $claimReceiptPath,
+                    'receipt_fingerprint' => $assess['fingerprint'],
+                    'duplicate_warnings' => $assess['warnings'] ?: null,
                     'match_status' => PaymentVerification::MATCH_PENDING,
                     'verification_status' => PaymentVerification::STATUS_PENDING,
+                ]);
+                $this->reserveReceipt($verification);
+
+                EvidencePhoto::create([
+                    'photo_type' => 'OTHER',
+                    'bill_id' => $bill->id,
+                    'task_id' => $task?->id,
+                    'officer_id' => $user->id,
+                    'file_path' => $claimReceiptPath,
+                    'mime' => $claimMime,
+                    'size_bytes' => $claimSize,
+                    'remarks' => 'Payment receipt for bill '.$bill->document_number.' (claim #'.$verification->id.').',
                 ]);
 
                 $bill->case_status = 'Under Verification';
@@ -552,7 +588,11 @@ class EnforcementController extends Controller
                 }
 
                 $this->tasks->notifySection('ACCT', 'Payment claim', "On-the-spot claim for bill {$bill->document_number} awaiting verification.", 'payments');
-                $this->audit->record($bill, 'payments.claimed_onspot', $user->id, [], ['verification_id' => $verification->id]);
+                $this->audit->record($verification, 'payment.claim_submitted', $user->id, [], [
+                    'bill_id' => $bill->id,
+                    'task_id' => $claimTask?->id,
+                    'verification_status' => PaymentVerification::STATUS_PENDING,
+                ]);
             }
 
             $this->audit->record($visit, 'enforcement.visit_complete', $user->id, [], ['task_id' => $visit->task_id]);
@@ -570,6 +610,19 @@ class EnforcementController extends Controller
 
             return $payload;
         });
+        } catch (ReceiptConflictException $e) {
+            $this->audit->record($effectiveBill ?? $user, 'receipt.duplicate_blocked', $user->id, [], $e->context);
+            abort(422, $e->getMessage());
+        } catch (QueryException $e) {
+            if ((string) $e->getCode() !== '23000') {
+                throw $e;
+            }
+            $this->audit->record($effectiveBill ?? $user, 'receipt.duplicate_conflict', $user->id, [], [
+                'bill_id' => $effectiveBill?->id,
+                'receipt_number' => $data['claim_receipt_number'] ?? null,
+            ]);
+            abort(422, 'A conflicting receipt claim was submitted at almost the same moment. Please retry.');
+        }
 
         return response()->json([
             'data' => $visitPayload,

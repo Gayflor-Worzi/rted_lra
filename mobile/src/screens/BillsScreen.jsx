@@ -3,9 +3,10 @@ import { View, Text, TouchableOpacity, TextInput, StyleSheet, RefreshControl } f
 import { useFocusEffect } from '@react-navigation/native'
 import api from '../api'
 import { useAuth } from '../auth'
+import { fetchOfflineRead } from '../offline'
 import { can, serverMessage } from '../rbac'
 import { theme } from '../theme'
-import { Screen, BrandHeader, Card, Badge, Btn, Empty } from '../components'
+import { Screen, BrandHeader, Card, Badge, Btn, Empty, OfflineReadStatus } from '../components'
 import BillAmendSheet from './parts/BillAmendSheet'
 
 const fmtMoney = (v) => (v == null || Number.isNaN(Number(v)) ? '—' : '$' + Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }))
@@ -51,7 +52,7 @@ const BillRow = ({ bill, canAmend, onAmend }) => (
  * + POST /property-bills/{id}/amend).
  */
 export default function BillsScreen() {
-  const { user } = useAuth()
+  const { user, canUseOfflineCache } = useAuth()
   const canDoc = can(user, 'bills.amend_document')
   const canFin = can(user, 'bills.amend_penalty_interest')
   const canAmend = canDoc || canFin
@@ -59,6 +60,8 @@ export default function BillsScreen() {
   const [mine, setMine] = useState([])
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
+  const [readStatus, setReadStatus] = useState(null)
+  const [syncedAt, setSyncedAt] = useState(null)
   const [refreshing, setRefreshing] = useState(false)
 
   const [propertyId, setPropertyId] = useState('')
@@ -71,14 +74,23 @@ export default function BillsScreen() {
 
   const load = useCallback(async () => {
     try {
-      const r = await api.get('/property-bills', { params: { logged_by: user?.id, per_page: 50 } })
-      setMine(r.data?.data?.data || r.data?.data || [])
-      setErr('')
+      const result = await fetchOfflineRead({
+        module: 'bills',
+        cacheKey: `${user?.role}:logged-by:${user?.id}:50`,
+        user,
+        allowCache: canUseOfflineCache,
+        request: () => api.get('/property-bills', { params: { logged_by: user?.id, per_page: 50 } }),
+        select: (response) => response.data?.data?.data || response.data?.data || [],
+      })
+      setMine(result.status === 'expired' ? [] : result.data)
+      setReadStatus(result.status)
+      setSyncedAt(result.syncedAt)
+      setErr(result.status === 'expired' ? 'Offline bill data has expired. Connect to refresh it.' : '')
     } catch (e) {
       setErr(serverMessage(e, 'Unable to load your bills.'))
     }
     setLoading(false)
-  }, [user?.id])
+  }, [user, canUseOfflineCache])
 
   useFocusEffect(useCallback(() => { load() }, [load]))
 
@@ -91,16 +103,25 @@ export default function BillsScreen() {
     }
     setFinding(true); setFindErr(''); setFindDone('')
     try {
-      const r = await api.get('/property-bills/lookup', { params: { property_id: propertyId.trim(), tax_period: taxPeriod.trim() } })
-      const b = r.data?.data
+      const result = await fetchOfflineRead({
+        module: 'bills',
+        cacheKey: `${user?.role}:lookup:${propertyId.trim().toUpperCase()}:${taxPeriod.trim()}`,
+        user,
+        allowCache: canUseOfflineCache,
+        request: () => api.get('/property-bills/lookup', { params: { property_id: propertyId.trim(), tax_period: taxPeriod.trim() } }),
+        select: (response) => response.data?.data,
+      })
+      const b = result.status === 'expired' ? null : result.data
       if (b) {
         setFindDone(`Found ${b.document_number} — logged by ${b.account_staff || 'another staff member'}. Tap Amend to make changes.`)
         setAmendBill(b)
+      } else if (result.status === 'expired') {
+        setFindErr('The saved bill lookup has expired. Connect to verify this record before preparing an amendment.')
       } else {
         setFindErr('No bill matched that Property ID + Tax Period.')
       }
     } catch (e) {
-      const msg = serverMessage(e, 'Lookup failed.')
+      const msg = serverMessage(e, 'Lookup failed. The bill must be looked up online once before it is available offline.')
       setFindErr(msg)
     }
     setFinding(false)
@@ -116,6 +137,7 @@ export default function BillsScreen() {
         title="Bills"
         subtitle={canAmend ? 'Bills I logged · central registry' : 'Bills I logged'}
       />
+      <OfflineReadStatus status={readStatus} syncedAt={syncedAt} />
 
       {canAmend && (
         <Card style={{ marginTop: 12 }}>
