@@ -249,7 +249,7 @@ export default function Login() {
                 <div className="flex items-center gap-3">
                   <div className="w-11 h-11 rounded-xl bg-brand-50 grid place-items-center text-xl shrink-0">📲</div>
                   <div className="min-w-0">
-                    <div className="text-sm font-bold text-navy-800">Field App</div>
+                    <div className="text-sm font-bold text-navy-800">Field App v{BRAND.apkVersion}</div>
                     <div className="text-[11px] text-slate-500">Android companion for field officers · works offline</div>
                   </div>
                 </div>

@@ -50,6 +50,22 @@ afterEach(async () => {
 })
 
 describe('login navigation with React Router 7', () => {
+  it('shows the current Android app version and public release download', async () => {
+    await act(async () => root.render(
+      <MemoryRouter initialEntries={['/login']}>
+        <Routes>
+          <Route path="/login" element={<Login />} />
+        </Routes>
+      </MemoryRouter>,
+    ))
+
+    const download = mount.querySelector(
+      'a[href="https://github.com/Gayflor-Worzi/rted_lra/releases/download/v1.0.1/retd-lra-field-1.0.4.apk"]',
+    )
+    expect(download).not.toBeNull()
+    expect(mount.textContent).toContain('Field App v1.0.4')
+  })
+
   it('navigates to the dashboard after successful login', async () => {
     await act(async () => root.render(
       <MemoryRouter initialEntries={['/login']}>
