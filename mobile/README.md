@@ -18,7 +18,7 @@ The checked-in `android/` project is the source of truth for Android application
 
 ## Android release signing
 
-Android release builds require the existing production keystore. EAS builds use the project's existing remotely managed Android credentials; the native Gradle configuration applies EAS's injected signing configuration when it is present. Do not use the debug keystore or put signing credentials in source control.
+Android release builds require the existing production keystore. EAS builds use the project's existing remotely managed Android credentials and inject their signing configuration during the cloud build. The Gradle check accepts that EAS-injected configuration while continuing to require the local signing variables for local release builds. Do not use the debug keystore or put signing credentials in source control.
 
 For local release builds only, set these environment variables in the local build terminal before running a release task:
 
