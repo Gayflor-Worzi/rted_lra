@@ -13,8 +13,8 @@ use App\Services\TaskService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Laravel\Sanctum\Sanctum;
-use Tests\Feature\Concerns\LocalDemoUsers;
 use Tests\Feature\Concerns\ApprovedEnforcementAssignments;
+use Tests\Feature\Concerns\LocalDemoUsers;
 use Tests\TestCase;
 
 /**
@@ -72,7 +72,7 @@ class PreBetaAuditRegressionTest extends TestCase
 
     private function systemAdministrator(): User
     {
-        return User::where('email', 'wooze27@gmail.com')->firstOrFail();
+        return $this->localRoleUser('system.admin@test.lra', 'System Administrator', 'SYS');
     }
 
     private function logBill(string $doc, string $property): array

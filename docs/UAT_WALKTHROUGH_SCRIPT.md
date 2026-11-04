@@ -5,22 +5,23 @@ workflow with the seeded demo accounts against a **fresh reset baseline**
 (`php artisan app:reset-dev --force` before starting), then sign-offs are
 recorded in the "Sign-off register" at the end.
 
-Demo passwords are baseline-only; `wooze27@gmail.com` is seeded with a random
-password unless `SEED_ADMIN_PASSWORD` is pinned in `.env`.
+Demo passwords below apply only to development/test demo accounts. The System
+Administrator is provisioned separately and is not included in the demo seed.
 
 | Account type | Demo password |
 |--------------|---------------|
 | Account Manager / Account & Records Officer | `account123` |
 | Assistant Commissioner, Enforcement Officer, Valuation Manager, Valuation Officer | `officer123` |
 
-The roster, credentials and every expected (403) code below are pinned to the
-seed baseline by `tests/Feature/UatBaselineCheckTest.php` — if any of them
-drift, the suite fails before a walkthrough is attempted.
+The six demo accounts, credentials and every expected (403) code below are
+pinned to the development/test seed baseline by
+`tests/Feature/UatBaselineCheckTest.php`. Provision the authorized System
+Administrator separately before admin-only walkthrough checks.
 
 ## 0. Refresh the baseline before walkthroughs
 
 ```bat
-:: truncates business/audit tables, re-seeds users/roles/permissions/sections
+:: destructive dev-data reset; run only with explicit data-removal authorization
 php artisan app:reset-dev --force
 php artisan lra:integrity-check   REM expect: healthy, 0 findings
 ```
@@ -29,7 +30,7 @@ php artisan lra:integrity-check   REM expect: healthy, 0 findings
 
 | Role | Login (email) | Walkthrough checklist |
 |------|---------------|-----------------------|
-| System Administrator | `wooze27@gmail.com` | G0/G2 admin, G5 security headers, audit chain |
+| System Administrator | use the separately provisioned administrator email | G0/G2 admin, G5 security headers, audit chain |
 | Assistant Commissioner | `ac@test.lra` | G6 analytics/KPI, reports, division drill-down |
 | Account Manager | `account.manager@test.lra` | G1 account desk, G2 scope, confirm payments |
 | Account & Records Officer | `account.officer@test.lra` | G1 log discovery→bill, receipt verification |

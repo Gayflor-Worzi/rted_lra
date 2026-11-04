@@ -6,11 +6,13 @@ use App\Models\AuditLog;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Laravel\Sanctum\Sanctum;
+use Tests\Feature\Concerns\SystemAdministratorFixture;
 use Tests\TestCase;
 
 class AuditCsvExportSecurityTest extends TestCase
 {
     use RefreshDatabase;
+    use SystemAdministratorFixture;
 
     protected function setUp(): void
     {
@@ -20,7 +22,7 @@ class AuditCsvExportSecurityTest extends TestCase
 
     public function test_audit_export_neutralizes_formula_cells_and_preserves_csv_values_and_shape(): void
     {
-        $exporter = User::where('email', 'wooze27@gmail.com')->firstOrFail();
+        $exporter = $this->systemAdministratorFixture();
         $actor = User::where('email', 'account.officer@test.lra')->firstOrFail();
         $actor->update(['full_name' => '@Audit Actor']);
 

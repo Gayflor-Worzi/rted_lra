@@ -1,3 +1,4 @@
+# HISTORICAL ONLY — production RETD hosting moved to Namecheap; do not deploy.
 # Render Blueprint — RETD Tasks Management full-stack staging.
 # API (Laravel/PHP) + Web frontend (Vite/React static site).
 #
@@ -37,13 +38,13 @@ services:
       - key: DB_CONNECTION
         value: pgsql
       - key: DB_HOST
-        value: aws-1-eu-west-1.pooler.supabase.com
+        value: <historical-host-redacted>
       - key: DB_PORT
         value: "5432"
       - key: DB_DATABASE
         value: postgres
       - key: DB_USERNAME
-        value: postgres.jtwibiorwtqzvsjvmlcf
+        value: <historical-username-redacted>
       - key: DB_PASSWORD
         sync: false
       - key: DB_SSLMODE

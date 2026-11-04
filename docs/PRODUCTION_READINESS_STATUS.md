@@ -208,7 +208,8 @@ stale-`syncing` revive, per-row `attempts`/`last_error`, deferred parent-child r
   (incl. the real-device offline drill with replay expectations and the expected-403
   negative matrix), a sign-off register, and Gate-10 closure conditions.
 - **Baseline pinning:** `tests/Feature/UatBaselineCheckTest.php` (4 methods / 28 assertions)
-  locks the roster — exactly **7 demo accounts** (System Administrator, Account Manager,
+  locks the roster — exactly **6 demo accounts** (System Administrator is provisioned separately,
+  Account Manager,
   Account & Records Officer, Assistant Commissioner, Enforcement Officer, Valuation Manager,
   Valuation Officer) — the demo passwords (`account123` / `officer123`), the retained team
   wiring, and every expected-403 matrix string to the seed baseline. `DatabaseSeeder` no

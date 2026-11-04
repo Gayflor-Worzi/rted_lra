@@ -9,11 +9,13 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Symfony\Component\Mailer\Exception\TransportException;
+use Tests\Feature\Concerns\SystemAdministratorFixture;
 use Tests\TestCase;
 
 class BrevoMailTransportTest extends TestCase
 {
     use RefreshDatabase;
+    use SystemAdministratorFixture;
 
     private const API_URL = 'https://api.brevo.com/v3/smtp/email';
 
@@ -33,9 +35,7 @@ class BrevoMailTransportTest extends TestCase
         Mail::purge('brevo');
         Http::preventStrayRequests();
 
-        $this->admin = User::query()
-            ->whereHas('role', fn ($query) => $query->where('name', 'System Administrator'))
-            ->firstOrFail();
+        $this->admin = $this->systemAdministratorFixture();
     }
 
     public function test_admin_otp_uses_brevo_https_api_and_verified_configured_sender(): void

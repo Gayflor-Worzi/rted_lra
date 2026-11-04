@@ -1,4 +1,7 @@
 *.log
+/database/retd_lra_11_12_2026.sql
+/database/retd_lra_testing_current_2026-11-02.sql
+/database/retd_lra_testing_current_2026-11-02.sql.sql
 .DS_Store
 .env
 .env.backup

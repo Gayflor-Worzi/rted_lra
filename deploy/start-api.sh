@@ -1,6 +1,6 @@
 #!/bin/sh
 set -eu
 
-php artisan migrate --force --no-interaction
+# Apply reviewed migrations explicitly after a verified database backup.
 php artisan storage:link --force
 exec apache2-foreground

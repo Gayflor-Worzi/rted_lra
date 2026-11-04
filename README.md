@@ -32,10 +32,26 @@ npm install
 npm run build
 ```
 
-### 4. Run Migrations
+### 4. Run Local Development Migrations
 ```bash
-php artisan migrate --force
+php artisan migrate
 ```
+
+The following initialization commands are only for a newly provisioned database
+after a verified backup and explicit review. Do not run them against the existing
+Namecheap RETD database as part of a routine deployment:
+
+```bash
+php artisan db:seed --class="Database\Seeders\ConfigurationSeeder"
+php artisan retd:provision-system-admin --name="Authorized Administrator" --email="admin@example.org" --staff-id="SYS-0001"
+```
+
+The provisioning command prompts for a temporary password without echoing it,
+requires confirmation, and forces a password change at first login. Run it only
+from an authorized interactive server shell after verifying that no System
+Administrator exists and receiving explicit authorization. The
+default `DatabaseSeeder` adds demo accounts only in `local` and `testing`;
+`DemoUserSeeder` refuses all other environments.
 
 ### 5. Start the API Server
 ```bash

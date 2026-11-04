@@ -9,17 +9,20 @@ Two applications are in use:
 1. **Web console** (office staff — all roles): `http://localhost:5173`
 2. **Mobile app** (Enforcement Officers in the field): Expo Go, URL `exp://<LAN-IP>:8081` (e.g. `exp://10.0.27.12:8081`)
 
-Common logins (demo data):
+Common logins (development/test demo data):
 
 | Role | Email | Password |
 |---|---|---|
-| System Administrator | `wooze27@gmail.com` | (set via `SEED_ADMIN_PASSWORD` on `db:seed`; random if unset) |
 | Account & Records Officer | `account.officer@test.lra` | `account123` |
 | Account Manager | `account.manager@test.lra` | `account123` |
 | Assistant Commissioner | `ac@test.lra` | `officer123` |
 | Valuation Manager | `val.manager@test.lra` | `officer123` |
 | Valuation Officer | `val.officer@test.lra` | `officer123` |
 | Enforcement Officer | `enf.officer@test.lra` | `officer123` |
+
+The System Administrator is not a demo account. Provision it separately with
+the authorized interactive `retd:provision-system-admin` command after seeding
+configuration; the command forces a password change at first login.
 
 ---
 

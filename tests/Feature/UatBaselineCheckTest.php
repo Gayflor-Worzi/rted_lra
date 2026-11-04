@@ -9,14 +9,14 @@ use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
 /**
- * Gate 9 — UAT baseline pin.
+ * Gate 9 — development/test demo baseline pin.
  *
  * Locks the walkthrough duty roster in docs/UAT_WALKTHROUGH_SCRIPT.md to the
- * trimmed seed baseline so the human-led exercise cannot silently drift:
- *   - every roster login exists, holds the documented role/section, is active,
+ * development/test demo seeder so the human-led exercise cannot silently drift:
+ *   - every demo login exists, holds the documented role/section, is active,
  *     has no forced reset, and its demo password hash still matches; and
  *   - the G2 "expected 403" (negative) matrix asserts exact codes with the
- *     retained accounts (the demo baseline ships 7 accounts; supervisor and
+ *     retained accounts (the demo baseline ships 6 accounts; supervisor and
  *     M&E role-behaviour coverage lives in the automated suite via
  *     tests/Feature/Concerns/LocalDemoUsers fixtures).
  */
@@ -38,7 +38,6 @@ class UatBaselineCheckTest extends TestCase
     public function test_retained_duty_roster_logins_exist_with_documented_credentials(): void
     {
         $roster = [
-            'wooze27@gmail.com' => 'System Administrator',
             'ac@test.lra' => 'Assistant Commissioner',
             'account.manager@test.lra' => 'Account Manager',
             'account.officer@test.lra' => 'Account & Records Officer',
@@ -54,7 +53,11 @@ class UatBaselineCheckTest extends TestCase
             $this->assertFalse((bool) $user->must_reset_password, "Roster login {$email} must not force a reset during UAT");
         }
 
-        $this->assertSame(7, User::count(), 'The demo baseline must ship exactly the 7 retained accounts.');
+        $this->assertSame(6, User::count(), 'The demo baseline must ship exactly the 6 retained accounts.');
+        $this->assertNull(
+            User::whereHas('role', fn ($query) => $query->where('name', 'System Administrator'))->first(),
+            'The demo seeder must not provision the System Administrator.'
+        );
         $this->assertNull(User::where('email', 'enf.supervisor@test.lra')->first(), 'Enforcement Supervisor demo account trimmed.');
         $this->assertNull(User::where('email', 'val.supervisor@test.lra')->first(), 'Valuation Supervisor demo account trimmed.');
         $this->assertNull(User::where('email', 'me.officer@test.lra')->first(), 'M&E Officer demo account trimmed.');

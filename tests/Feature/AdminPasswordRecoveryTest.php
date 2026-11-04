@@ -10,11 +10,13 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
+use Tests\Feature\Concerns\SystemAdministratorFixture;
 use Tests\TestCase;
 
 class AdminPasswordRecoveryTest extends TestCase
 {
     use RefreshDatabase;
+    use SystemAdministratorFixture;
 
     protected User $admin;
 
@@ -25,9 +27,7 @@ class AdminPasswordRecoveryTest extends TestCase
         config(['mail.default' => 'smtp']);
         Mail::fake();
 
-        $this->admin = User::query()
-            ->whereHas('role', fn ($query) => $query->where('name', 'System Administrator'))
-            ->firstOrFail();
+        $this->admin = $this->systemAdministratorFixture();
     }
 
     public function test_recovery_is_available_only_to_active_system_administrators_without_disclosing_account_status(): void

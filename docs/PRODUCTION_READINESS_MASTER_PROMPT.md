@@ -174,11 +174,12 @@ rows for each transition, and `php artisan lra:integrity-check` clean afterwards
 
 ## Gate 2 — RBAC (positive + negative, through the API)
 
-For **every seeded role** (System Administrator, Assistant Commissioner, Account
+For **every seeded role** (Assistant Commissioner, Account
 Manager, Account Supervisor, Account & Records Officer, Enforcement Manager,
 Enforcement Supervisor, Enforcement Officer, M&E Officer, Valuation Manager,
 Valuation Supervisor, Valuation Officer) execute a positive AND negative matrix
-through the endpoints, never relying on hidden UI buttons.
+through the endpoints, never relying on hidden UI buttons. Test the separately
+provisioned System Administrator account in the same matrix after provisioning.
 
 | User | Must be able to | Must NOT be able to |
 | --- | --- | --- |

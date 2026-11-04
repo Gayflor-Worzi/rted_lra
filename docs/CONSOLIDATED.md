@@ -247,13 +247,16 @@ Officer respond → [Answered] → close (raiser/M&E/Admin) → [Closed]
 
 | Role | Email | Password |
 |---|---|---|
-| System Administrator | `wooze27@gmail.com` | (set via `SEED_ADMIN_PASSWORD` on `db:seed`; random if unset) |
 | Account & Records Officer | `account.officer@test.lra` | `account123` |
 | Account Manager | `account.manager@test.lra` | `account123` |
 | Assistant Commissioner | `ac@test.lra` | `officer123` |
 | Valuation Manager | `val.manager@test.lra` | `officer123` |
 | Valuation Officer | `val.officer@test.lra` | `officer123` |
 | Enforcement Officer | `enf.officer@test.lra` | `officer123` |
+
+System Administrator accounts are provisioned separately with the authorized
+interactive `retd:provision-system-admin` command; they are not created by
+the configuration or demo seeder.
 
 **Access:** Web console `http://localhost:5173` · Mobile: Expo Go, `exp://<LAN-IP>:8081` (same Wi-Fi as the PC).
 

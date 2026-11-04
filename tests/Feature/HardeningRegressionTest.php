@@ -31,6 +31,12 @@ class HardeningRegressionTest extends TestCase
 {
     use RefreshDatabase;
 
+    public function test_mysql_connections_use_utc_for_audit_timestamp_hashing(): void
+    {
+        $this->assertSame('+00:00', config('database.connections.mysql.timezone'));
+        $this->assertSame('+00:00', config('database.connections.mariadb.timezone'));
+    }
+
     protected function setUp(): void
     {
         parent::setUp();

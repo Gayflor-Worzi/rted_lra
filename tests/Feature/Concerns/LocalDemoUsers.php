@@ -9,9 +9,9 @@ use Illuminate\Support\Facades\Hash;
 
 /**
  * Local fixtures for roles whose canonical demo ACCOUNTS are intentionally NOT
- * part of the trimmed seed baseline (only the System Administrator, Account
- * Manager, Account & Records Officer, Assistant Commissioner, Enforcement
- * Officer, Valuation Manager and Valuation Officer user rows ship).
+ * part of the development/test seed baseline (only the Account Manager,
+ * Account & Records Officer, Assistant Commissioner, Enforcement Officer,
+ * Valuation Manager and Valuation Officer user rows ship).
  *
  * The ROLES themselves still seed with their full grant sets, so tests that
  * exercise a trimmed-role behaviour create that user row on demand — together
