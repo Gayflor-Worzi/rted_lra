@@ -12,6 +12,10 @@ Field submissions are stored in the account-scoped encrypted outbox before synch
 
 A record or evidence item is shown as synchronized only after server confirmation; failed or interrupted submissions remain available for review and retry. Server idempotency keys protect retries against duplicate records. Receipt submissions and on-the-spot payment claims remain claims pending verification: offline storage is not confirmation of payment. Payment verification/confirmation/rejection, escalations, assignment changes, direct official GPS corrections, and workflow decisions that require an authoritative server decision remain online-only; their entered form values may be retained encrypted as drafts.
 
+## Native Android configuration
+
+The checked-in `android/` project is the source of truth for Android application ID, version code, permissions, launcher resources, theme, and native module settings. EAS builds include this project; do not exclude it or run Prebuild without reviewing the generated native changes. SQLCipher is enabled by `expo.sqlite.useSQLCipher` in `android/gradle.properties`.
+
 ## Android release signing
 
 Android release builds require the existing production keystore. EAS builds use the project's existing remotely managed Android credentials; the native Gradle configuration applies EAS's injected signing configuration when it is present. Do not use the debug keystore or put signing credentials in source control.
@@ -23,4 +27,4 @@ For local release builds only, set these environment variables in the local buil
 - `RETD_RELEASE_KEY_ALIAS`
 - `RETD_RELEASE_KEY_PASSWORD`
 
-The current app version is `1.0.4` with Android `versionCode` `2`. Increment the version code for each subsequent Android release. Release tasks fail if the required signing variables are missing.
+The current app version is `1.0.4` with Android `versionCode` `2`. Increment the version code for each subsequent Android release. Local release tasks fail if the required local signing variables are missing.
